@@ -2,4 +2,15 @@ name: urban_validation
 channels:
   - conda-forge
 dependencies:
-  - 
+  - python=3.10
+  - geopandas
+  - pandas
+  - numpy
+  - shapely
+  - rasterio
+  - fiona
+  - pyyaml
+  - pyogrio
+  - rtree
+  - matplotlib
+  - seaborn
