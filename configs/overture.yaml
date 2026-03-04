@@ -1,0 +1,21 @@
+# configs/overture_buildings.yaml
+overture:
+  provider: "aws"          # aws|azure
+  release: "latest"        # e.g. "2026-02-18.0" or "latest"
+  theme: "buildings"
+  types: ["building", "building_part"]   # optional: just ["building"]
+  s3_url: "s3://overturemaps-us-west-2/release/"
+  s3_region: "us-west-2"
+
+aoi:
+  path: "data/01_raw/aoi/juba_aoi.geojson"   # gpkg/geojson/parquet/etc.
+  # layer: "aois"            # for gpkg
+  id_col: "id"
+  geom_col: "geometry"
+  crs_out: "EPSG:4326"     # Overture is lon/lat; keep AOIs in 4326 for filtering
+  buffer_meters: 0         # optional (applied in AOI CRS before reproject)
+
+output:
+  root_dir: "data/overture_extracts" #TODO: make configurable to the naming convention 
+  format: "geoparquet"     # geoparquet recommended
+  overwrite: false

@@ -1,0 +1,20 @@
+# configs/open_buildings_temporal.yaml
+open_buildings_temporal:
+  gcs_bucket: "open-buildings-temporal-data"
+  version: "v1"
+  manifests_prefix: "manifests"     # gs://<bucket>/<version>/manifests/...
+  years: [2016,2017,2018,2019,2020,2021,2022,2023]
+  bands: ["building_presence", "building_height", "building_fractional_count"]
+  # optional: if manifests are big, cache parsed manifest tables locally
+  cache_manifest_index: true
+
+aoi:
+  path: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/01_raw/ssd-juba/aoi/juba_aoi.geojson"
+  id_col: "id"
+  crs_out: "EPSG:4326"
+
+output:
+  root_dir: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/test/open_buildings_temporal_extracts"
+  overwrite: false
+  # If true, clip each downloaded tile to AOI bbox (fast); exact polygon clip is optional.
+  clip_to_bbox: true

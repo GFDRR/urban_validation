@@ -1,0 +1,20 @@
+aoi:
+  path: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/01_raw/ssd-juba/aoi/juba_aoi.geojson"
+  id_col: id
+  crs_out: EPSG:4326
+  buffer_meters: 0
+
+ghs_obat:
+  iso3: SSD
+  epoch: 2020
+  release: R2024A
+
+  # CSV containing iso3,url mapping
+  url_index_csv: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/configs/ghs_obat_url_index.csv"
+
+  # DIRECTORY where the zip/gpkg will be downloaded
+  local_dir: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/ghs_obat"
+
+output:
+  root_dir: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/outputs/ghs_obat"
+  overwrite: false

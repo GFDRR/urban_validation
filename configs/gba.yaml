@@ -1,0 +1,18 @@
+# configs/gba.yaml
+gba:
+  source: "source_coop"
+  dataset: "globalbuildingatlas-lod1"
+  types: ["building"]
+  s3_url: "s3://us-west-2.opendata.source.coop/tge-labs/globalbuildingatlas-lod1/"
+  s3_region: "us-west-2"
+
+aoi:
+  path: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/01_raw/ssd-juba/aoi/juba_aoi.geojson"
+  id_col: "id"
+  geom_col: "geometry"
+  crs_out: "EPSG:4326"
+  buffer_meters: 0
+
+output:
+  root_dir: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/test/gba_extracts"
+  overwrite: false

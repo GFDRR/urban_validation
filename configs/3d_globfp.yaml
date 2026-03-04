@@ -1,0 +1,15 @@
+aoi:
+  path:  "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/01_raw/ssd-juba/aoi/juba_aoi.geojson"
+  id_col: id
+  crs_out: EPSG:4326
+
+globfp:
+  # where to cache grid + downloaded tiles
+  local_dir: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/3d_globfp"
+
+  # zenodo record with world_grid.zip
+  zenodo_record: 15487006
+
+output:
+  root_dir: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/3d_globfp"
+  overwrite: false
