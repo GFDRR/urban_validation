@@ -1,0 +1,58 @@
+city: ssd-juba
+root_dir: /content/drive/MyDrive/Gates Foundation/Building Dataset Validation
+crs: EPSG:32636  # UTM zone 36N
+
+aoi: data/01_raw/ssd-juba/aoi/jubacitycenter_aoi.geojson
+reference: data/01_raw/ssd-juba/reference/vector/jubacitycenter_ref.geojson
+
+vector:
+  out_path: data/01_raw/ssd-juba/predicted/vector/
+  preprocessing:
+    - min_area_m2: 20           # filter very tiny polygons
+    - tile_size_m: 1000         # 1 km tiles
+    - tau_overlap: 0.5          # minimum IoU for a match
+    - tau_buffer_m: 2.0         # positional tolerance (optional, not yet used below)
+    - tau_boundary: 2.0         # tolerance for calculating boundary overlap
+    - fix_invalid_geoms: true   # set false if you want to skip geometry fixing
+
+  datasets:                      # candidates
+    - name: overture
+      enabled: true              # TODO maybe rename to download??
+    - name: gba
+      enabled: true
+      s3_url: "s3://us-west-2.opendata.source.coop/tge-labs/globalbuildingatlas-lod1/"
+      s3_region: "us-west-2"
+      country_iso: 'ssd'
+
+raster:
+  out_path: data/01_raw/ssd-juba/predicted/raster/
+  preprocessing:
+    - tau_frac: 0.2           # default threshold for converting fractional/area predictions to binary built/not-built (if dataset doesn't override)
+    - oversample_factor: 4    # reference rasterization oversampling; consider higher (8–16) for coarse rasters (76–100m)
+    - all_touched: false      # include pixels touched by polygons when rasterizing reference
+
+  datasets:
+    - name: wsf-tracker
+      binarize:
+        method: wsf_tracker
+        as_of_code: 19
+        built_value_min: 1
+        nonbuilt_value: 0
+        threshold_frac: 0.5
+    - name: tempo
+      binarize:
+        method: fraction
+        band: 1
+        clamp_min: 0.0
+        clamp_max: 1.0
+        threshold_frac: 0.2
+      rasterization:
+        oversample_factor: 16
+    - name: ghs
+      binarize:
+        method: area_m2
+        band: 1
+        threshold_m2: 0.0
+        clamp_to_pixel_area: true
+      rasterization:
+        oversample_factor: 16
