@@ -8,12 +8,12 @@ reference: data/01_raw/ssd-juba/reference/vector/jubacitycenter_ref.geojson
 vector:
   out_path: data/01_raw/ssd-juba/predicted/vector/
   preprocessing:
-    - min_area_m2: 20           # filter very tiny polygons
-    - tile_size_m: 1000         # 1 km tiles
-    - tau_overlap: 0.5          # minimum IoU for a match
-    - tau_buffer_m: 2.0         # positional tolerance (optional, not yet used below)
-    - tau_boundary: 2.0         # tolerance for calculating boundary overlap
-    - fix_invalid_geoms: true   # set false if you want to skip geometry fixing
+    min_area_m2: 20           # filter very tiny polygons
+    tile_size_m: 1000         # 1 km tiles
+    tau_overlap: 0.5          # minimum IoU for a match
+    tau_buffer_m: 2.0         # positional tolerance (optional, not yet used below)
+    tau_boundary: 2.0         # tolerance for calculating boundary overlap
+    fix_invalid_geoms: true   # set false if you want to skip geometry fixing
 
   datasets:                      # candidates
     - name: overture
@@ -27,9 +27,9 @@ vector:
 raster:
   out_path: data/01_raw/ssd-juba/predicted/raster/
   preprocessing:
-    - tau_frac: 0.2           # default threshold for converting fractional/area predictions to binary built/not-built (if dataset doesn't override)
-    - oversample_factor: 4    # reference rasterization oversampling; consider higher (8–16) for coarse rasters (76–100m)
-    - all_touched: false      # include pixels touched by polygons when rasterizing reference
+    tau_frac: 0.2           # default threshold for converting fractional/area predictions to binary built/not-built (if dataset doesn't override)
+    oversample_factor: 4    # reference rasterization oversampling; consider higher (8–16) for coarse rasters (76–100m)
+    all_touched: false      # include pixels touched by polygons when rasterizing reference
 
   datasets:
     - name: wsf-tracker
