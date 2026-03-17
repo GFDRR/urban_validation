@@ -11,7 +11,7 @@ import requests
 from shapely.geometry import mapping
 
 from src.config import load_config
-from src.utils import load_aoi, ensure_world_grid, get_grid_ids_for_geometry, download_globfp_grid_tile
+from src.utils import load_all_aois, ensure_world_grid, get_grid_ids_for_geometry, download_globfp_grid_tile
 
 logger = logging.getLogger("Urban_Vector_Downloader")
 logger.setLevel(logging.INFO)
@@ -36,127 +36,9 @@ class UrbanVectorDownloader:
         self.overwrite = bool(self.config.output.overwrite)
 
         # Load the dataset inventory: list of (dataset_id, dissolved_aoi_gdf, out_root)
-        self.datasets = self._load_dataset_inventory()
+        self.datasets = load_all_aois(self.config)
         self.logger.info("Loaded %d dataset(s) from inventory", len(self.datasets))
 
-    # ── Inventory loading ─────────────────────────────────────────────────────
-
-    def _load_dataset_inventory(self) -> List[Dict]:
-        """
-        Returns a list of dicts, one per dataset:
-            {"id": str, "aoi": GeoDataFrame, "out_root": Path, "slug": str}
-
-        Handles two input modes:
-          - CSV reference inventory (detected by .csv suffix)
-          - Single AOI file (any other extension — legacy mode)
-        """
-        aoi_cfg  = self.config.aoi
-        aoi_path = Path(aoi_cfg.path)
-
-        if aoi_path.suffix.lower() == ".csv":
-            return self._datasets_from_csv(aoi_path)
-        else:
-            # Legacy: single AOI file, one dataset
-            return self._datasets_from_single_aoi(aoi_path)
-
-    def _datasets_from_csv(self, csv_path: Path) -> List[Dict]:
-        """
-        Parse the reference inventory CSV.
-        Each unique `id_col` value becomes one dataset whose AOI is the
-        union of all `|`-delimited paths in `aoi_file_path`.
-        """
-        aoi_cfg  = self.config.aoi
-        base_dir = Path(aoi_cfg.base_dir) if aoi_cfg.base_dir else csv_path.parent
-        id_col   = aoi_cfg.id_col          # e.g. "Dataset code"
-
-        df = pd.read_csv(csv_path)
-
-        if aoi_cfg.filter_suitable:
-            before = len(df)
-            df = df[df["Suitable (yes/N)"].str.strip().str.lower() == "yes"]
-            self.logger.info("Filtered inventory: %d -> %d suitable rows", before, len(df))
-
-        # Deduplicate by dataset id — keep first occurrence
-        df = df.drop_duplicates(subset=[id_col])
-
-        datasets = []
-        for _, row in df.iterrows():
-            dataset_id  = str(row[id_col])
-            raw_paths   = str(row.get("aoi_file_path", ""))
-
-            # Resolve each `|`-delimited relative path
-            aoi_paths = [
-                base_dir / p.strip()
-                for p in raw_paths.split("|")
-                if p.strip()
-            ]
-            existing = [p for p in aoi_paths if p.exists()]
-            if not existing:
-                self.logger.warning("Dataset %s: no AOI files found, skipping. Paths tried: %s",
-                                    dataset_id, aoi_paths[:3])
-                continue
-
-            # Load and dissolve all AOI files for this dataset into one geometry
-            aoi = self._load_and_dissolve_aois(existing, dataset_id)
-            if aoi is None or aoi.empty:
-                self.logger.warning("Dataset %s: empty AOI after loading, skipping", dataset_id)
-                continue
-
-            slug     = dataset_id.replace("-", "_").replace(" ", "_")
-            out_root = self._resolve_out_root(dataset_id, base_dir)
-            out_root.mkdir(parents=True, exist_ok=True)
-
-            datasets.append({"id": dataset_id, "slug": slug, "aoi": aoi, "out_root": out_root})
-
-        return datasets
-
-    def _datasets_from_single_aoi(self, aoi_path: Path) -> List[Dict]:
-        """Legacy mode: wrap a single AOI file as one dataset entry."""
-        aoi = load_aoi(
-            aoi_path,
-            crs_out=self.config.aoi.crs_out,
-            buffer_meters=self.config.aoi.buffer_meters,
-            dissolve=True,
-            logger=self.logger,
-        )
-        slug     = aoi_path.parent.parent.name.replace("-", "_").replace(" ", "_")
-        out_root = aoi_path.parent.parent / "vector"
-        out_root.mkdir(parents=True, exist_ok=True)
-        dataset_id = aoi_path.parent.parent.name
-        return [{"id": dataset_id, "slug": slug, "aoi": aoi, "out_root": out_root}]
-
-    def _load_and_dissolve_aois(self, paths: List[Path], dataset_id: str) -> Optional[gpd.GeoDataFrame]:
-        """Load multiple AOI files and dissolve into a single GeoDataFrame."""
-        parts = []
-        for p in paths:
-            try:
-                gdf = load_aoi(p, crs_out=self.config.aoi.crs_out,
-                               buffer_meters=self.config.aoi.buffer_meters,
-                               logger=self.logger)
-                parts.append(gdf)
-            except Exception:
-                self.logger.exception("Dataset %s: failed to load AOI %s", dataset_id, p)
-
-        if not parts:
-            return None
-
-        combined = gpd.GeoDataFrame(
-            pd.concat(parts, ignore_index=True),
-            crs=parts[0].crs,
-        )
-        return combined.dissolve().reset_index(drop=True) if len(combined) > 1 else combined
-
-    def _resolve_out_root(self, dataset_id: str, base_dir: Path) -> Path:
-        """
-        Output layout mirrors the source layout:
-            <base_dir>/<dataset_folder>/vector/
-        Falls back to config.output.root_dir / dataset_id if set.
-        """
-        if self.config.output.root_dir:
-            return Path(self.config.output.root_dir) / dataset_id / "vector"
-        return base_dir / dataset_id / "vector"
-
-    # ── Source helpers (unchanged) ────────────────────────────────────────────
 
     def _enabled_sources(self):
         gba_on    = getattr(self.config, "gba",     None) and self.config.gba.enabled
@@ -192,8 +74,6 @@ class UrbanVectorDownloader:
         con.execute("SET s3_endpoint='s3.us-west-2.amazonaws.com';")
         con.execute("SET s3_use_ssl=true;")
         return con
-
-    # ── Main entry point ──────────────────────────────────────────────────────
 
     def run_connection(self) -> Dict[str, List[str]]:
         """
@@ -236,8 +116,6 @@ class UrbanVectorDownloader:
         total = sum(len(v) for v in all_outputs.values())
         self.logger.info("All datasets complete | total outputs=%d", total)
         return all_outputs
-
-    # ── Per-source runners ────────────────────────────────────────────────────
 
     def _run_gba(self, con, ds: Dict) -> List[str]:
         parquet_glob = self._gba_parquet_glob()
@@ -307,8 +185,6 @@ class UrbanVectorDownloader:
             except Exception:
                 self.logger.exception("Failed | dataset=%s out=%s", ds["id"], out_path)
         return outputs
-
-    # ── Core spatial query (unchanged) ───────────────────────────────────────
 
     def extract_data_for_aoi(self, *, con, aoi_geom, out_path, overwrite=False,
                               shp_path=None, parquet_glob=None, base_path=None,

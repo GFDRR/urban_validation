@@ -392,3 +392,119 @@ def subset_by_tile(buildings: gpd.GeoDataFrame,
     subset = subset[subset.intersects(tile_geom)].copy()
     # IMPORTANT: do NOT reset index here – we want original indices
     return subset
+
+def resolve_out_root(config, dataset_id: str, base_dir: Path) -> Path:
+    """
+    Output layout mirrors the source layout:
+        <base_dir>/<dataset_folder>/vector/
+    Falls back to config.output.root_dir / dataset_id if set.
+    """
+    if config.output.root_dir:
+        return Path(config.output.root_dir) / dataset_id / "vector"
+    return base_dir / dataset_id / "vector"
+
+
+def load_all_aois(config) -> List[Dict]:
+    """
+    Returns a list of dicts, one per dataset:
+        {"id": str, "aoi": GeoDataFrame, "out_root": Path, "slug": str}
+
+    Handles two input modes:
+      - CSV reference inventory (detected by .csv suffix)
+      - Single AOI file (any other extension — legacy mode)
+    """
+    aoi_config  = config.aoi
+    aoi_path = Path(aoi_config.path)
+
+    if aoi_path.suffix.lower() == ".csv":
+        return read_csv(config, aoi_path)
+    else:
+        return read_json(config, aoi_path) # single AOI file, one dataset
+
+def read_csv(config, csv_path: Path) -> List[Dict]:
+    """
+    Parse the reference inventory CSV.
+    Each unique `id_col` value becomes one dataset whose AOI is the
+    union of all `|`-delimited paths in `aoi_file_path`.
+    """
+    aoi_config  = config.aoi
+    base_dir = Path(aoi_config.base_dir) if aoi_config.base_dir else csv_path.parent
+    id_col   = aoi_config.id_col          # "Dataset code"
+
+    df = pd.read_csv(csv_path)
+
+    if aoi_config.filter_suitable:
+        before = len(df)
+        df = df[df["Suitable (yes/N)"].str.strip().str.lower() == "yes"]
+        print("Filtered inventory: %d -> %d suitable rows", before, len(df))
+
+    # Deduplicate by dataset id — keep first occurrence
+    df = df.drop_duplicates(subset=[id_col])
+
+    datasets = []
+    for _, row in df.iterrows():
+        dataset_id  = str(row[id_col])
+        raw_paths   = str(row.get("aoi_file_path", ""))
+
+        # Resolve each `|`-delimited relative path
+        aoi_paths = [
+            base_dir / p.strip()
+            for p in raw_paths.split("|")
+            if p.strip()
+        ]
+        existing = [p for p in aoi_paths if p.exists()]
+        if not existing:
+            print("Dataset %s: no AOI files found, skipping. Paths tried: %s",
+                                dataset_id, aoi_paths[:3])
+            continue
+
+        # Load and dissolve all AOI files for this dataset into one geometry
+        aoi = load_and_dissolve_aois(config, existing, dataset_id)
+        if aoi is None or aoi.empty:
+            print("Dataset %s: empty AOI after loading, skipping", dataset_id)
+            continue
+
+        slug = dataset_id.replace("-", "_").replace(" ", "_")
+        out_root = resolve_out_root(config, dataset_id, base_dir)
+        out_root.mkdir(parents=True, exist_ok=True)
+
+        datasets.append({"id": dataset_id, "slug": slug, "aoi": aoi, "out_root": out_root})
+
+    return datasets
+
+def read_json(config, aoi_path: Path) -> List[Dict]:
+    """_datasets_from_single_aoi: Legacy mode: wrap a single AOI file as one dataset entry."""
+    aoi = load_aoi(
+        aoi_path,
+        crs_out=config.aoi.crs_out,
+        buffer_meters=config.aoi.buffer_meters,
+        dissolve=True,
+        # logger=self.logger,
+    )
+    slug     = aoi_path.parent.parent.name.replace("-", "_").replace(" ", "_")
+    out_root = aoi_path.parent.parent / "vector"
+    out_root.mkdir(parents=True, exist_ok=True)
+    dataset_id = aoi_path.parent.parent.name
+    return [{"id": dataset_id, "slug": slug, "aoi": aoi, "out_root": out_root}]
+
+def load_and_dissolve_aois(config, paths: List[Path], dataset_id: str) -> Optional[gpd.GeoDataFrame]:
+    """Load multiple AOI files and dissolve into a single GeoDataFrame."""
+    parts = []
+    for p in paths:
+        try:
+            gdf = load_aoi(p, crs_out=config.aoi.crs_out,
+                   buffer_meters=config.aoi.buffer_meters,
+                    #    logger=self.logger)
+            )
+            parts.append(gdf)
+        except Exception:
+            print("Dataset %s: failed to load AOI %s", dataset_id, p)
+
+    if not parts:
+        return None
+
+    combined = gpd.GeoDataFrame(
+        pd.concat(parts, ignore_index=True),
+        crs=parts[0].crs,
+    )
+    return combined.dissolve().reset_index(drop=True) if len(combined) > 1 else combined
