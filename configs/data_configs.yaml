@@ -1,0 +1,27 @@
+aoi:
+  path: "data/01_raw/ssd-juba/aoi/jubacitycenter_aoi.geojson" 
+  id_col: "id"
+  crs_out: "EPSG:4326"
+  buffer_meters: 0
+
+overture:
+  enabled: true
+  provider: "aws"          
+  release: "latest" 
+  theme: "buildings"
+  types: ["building"] # "building_part"]
+  s3_url: "s3://overturemaps-us-west-2/release/"
+  s3_region: "us-west-2"
+
+gba:
+  enabled: true
+  s3_url: "s3://us-west-2.opendata.source.coop/tge-labs/globalbuildingatlas-lod1/"
+  s3_region: "us-west-2"
+
+globfp:
+  enabled: true
+  local_dir: "data/01_raw/globfp_cache"
+  zenodo_record: 15487006
+
+output:
+  overwrite: false
