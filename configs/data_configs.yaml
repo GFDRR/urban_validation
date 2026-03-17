@@ -1,8 +1,10 @@
 aoi:
-  path: "data/01_raw/ssd-juba/aoi/jubacitycenter_aoi.geojson" 
-  id_col: "id"
+  path: data/02_interim/aoi_tracker.csv
+  base_dir: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/01_raw"
+  id_col: "Dataset code"
   crs_out: "EPSG:4326"
   buffer_meters: 0
+  filter_suitable: true
 
 overture:
   enabled: true

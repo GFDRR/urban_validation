@@ -1,15 +1,9 @@
-"""Class to download vector datasets for Global Urban Validation workflow
-
-Download utility functions for global building data."""
-
 from __future__ import annotations
-import os
-import re
 import json
 import logging
-from dataclasses import dataclass
+import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import duckdb
 import geopandas as gpd
@@ -19,89 +13,165 @@ from shapely.geometry import mapping
 from src.config import load_config
 from src.utils import load_aoi, ensure_world_grid, get_grid_ids_for_geometry, download_globfp_grid_tile
 
-# logging info
 logger = logging.getLogger("Urban_Vector_Downloader")
 logger.setLevel(logging.INFO)
-fmt = logging.Formatter(
-    "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 sh = logging.StreamHandler()
 sh.setFormatter(fmt)
 if not logger.handlers:
     logger.addHandler(sh)
 
-
 OVERTURE_STAC_ROOT = "https://stac.overturemaps.org/catalog.json"
+
 
 class UrbanVectorDownloader:
     """
-    Unified Vector Datasets downloader for:
-      - Overture Maps themes/types parquet
-      - Global Building Atlas (GBA) parquet
-      - 3D-GloBFP stored in parquet as well
+    Unified downloader for Overture / GBA / GloBFP building datasets.
+    Accepts either a single AOI file or a CSV reference inventory as input.
     """
 
-    def __init__(
-        self,
-        config_path: str,
-        *,
-        log: Optional[logging.Logger] = None,
-    ):
+    def __init__(self, config_path: str, *, log: Optional[logging.Logger] = None):
         self.logger = log or logging.getLogger("Urban_Vector_Downloader")
         self.config = load_config(config_path)
-        self.aoi =  load_aoi(
-            self.config.aoi.path,
+        self.overwrite = bool(self.config.output.overwrite)
+
+        # Load the dataset inventory: list of (dataset_id, dissolved_aoi_gdf, out_root)
+        self.datasets = self._load_dataset_inventory()
+        self.logger.info("Loaded %d dataset(s) from inventory", len(self.datasets))
+
+    # ── Inventory loading ─────────────────────────────────────────────────────
+
+    def _load_dataset_inventory(self) -> List[Dict]:
+        """
+        Returns a list of dicts, one per dataset:
+            {"id": str, "aoi": GeoDataFrame, "out_root": Path, "slug": str}
+
+        Handles two input modes:
+          - CSV reference inventory (detected by .csv suffix)
+          - Single AOI file (any other extension — legacy mode)
+        """
+        aoi_cfg  = self.config.aoi
+        aoi_path = Path(aoi_cfg.path)
+
+        if aoi_path.suffix.lower() == ".csv":
+            return self._datasets_from_csv(aoi_path)
+        else:
+            # Legacy: single AOI file, one dataset
+            return self._datasets_from_single_aoi(aoi_path)
+
+    def _datasets_from_csv(self, csv_path: Path) -> List[Dict]:
+        """
+        Parse the reference inventory CSV.
+        Each unique `id_col` value becomes one dataset whose AOI is the
+        union of all `|`-delimited paths in `aoi_file_path`.
+        """
+        aoi_cfg  = self.config.aoi
+        base_dir = Path(aoi_cfg.base_dir) if aoi_cfg.base_dir else csv_path.parent
+        id_col   = aoi_cfg.id_col          # e.g. "Dataset code"
+
+        df = pd.read_csv(csv_path)
+
+        if aoi_cfg.filter_suitable:
+            before = len(df)
+            df = df[df["Suitable (yes/N)"].str.strip().str.lower() == "yes"]
+            self.logger.info("Filtered inventory: %d -> %d suitable rows", before, len(df))
+
+        # Deduplicate by dataset id — keep first occurrence
+        df = df.drop_duplicates(subset=[id_col])
+
+        datasets = []
+        for _, row in df.iterrows():
+            dataset_id  = str(row[id_col])
+            raw_paths   = str(row.get("aoi_file_path", ""))
+
+            # Resolve each `|`-delimited relative path
+            aoi_paths = [
+                base_dir / p.strip()
+                for p in raw_paths.split("|")
+                if p.strip()
+            ]
+            existing = [p for p in aoi_paths if p.exists()]
+            if not existing:
+                self.logger.warning("Dataset %s: no AOI files found, skipping. Paths tried: %s",
+                                    dataset_id, aoi_paths[:3])
+                continue
+
+            # Load and dissolve all AOI files for this dataset into one geometry
+            aoi = self._load_and_dissolve_aois(existing, dataset_id)
+            if aoi is None or aoi.empty:
+                self.logger.warning("Dataset %s: empty AOI after loading, skipping", dataset_id)
+                continue
+
+            slug     = dataset_id.replace("-", "_").replace(" ", "_")
+            out_root = self._resolve_out_root(dataset_id, base_dir)
+            out_root.mkdir(parents=True, exist_ok=True)
+
+            datasets.append({"id": dataset_id, "slug": slug, "aoi": aoi, "out_root": out_root})
+
+        return datasets
+
+    def _datasets_from_single_aoi(self, aoi_path: Path) -> List[Dict]:
+        """Legacy mode: wrap a single AOI file as one dataset entry."""
+        aoi = load_aoi(
+            aoi_path,
             crs_out=self.config.aoi.crs_out,
             buffer_meters=self.config.aoi.buffer_meters,
             dissolve=True,
             logger=self.logger,
         )
+        slug     = aoi_path.parent.parent.name.replace("-", "_").replace(" ", "_")
+        out_root = aoi_path.parent.parent / "vector"
+        out_root.mkdir(parents=True, exist_ok=True)
+        dataset_id = aoi_path.parent.parent.name
+        return [{"id": dataset_id, "slug": slug, "aoi": aoi, "out_root": out_root}]
 
-        self.out_root = self.infer_out_root()
-        self.out_root.mkdir(parents=True, exist_ok=True)
-        
-        self.overwrite = bool(self.config.output.overwrite)
-        self.results: Dict[str, List[str]] = {}
+    def _load_and_dissolve_aois(self, paths: List[Path], dataset_id: str) -> Optional[gpd.GeoDataFrame]:
+        """Load multiple AOI files and dissolve into a single GeoDataFrame."""
+        parts = []
+        for p in paths:
+            try:
+                gdf = load_aoi(p, crs_out=self.config.aoi.crs_out,
+                               buffer_meters=self.config.aoi.buffer_meters,
+                               logger=self.logger)
+                parts.append(gdf)
+            except Exception:
+                self.logger.exception("Dataset %s: failed to load AOI %s", dataset_id, p)
 
-        self.logger.info("AOI columns: %s", list(self.aoi.columns))
-        self.root_slug = self.infer_root_slug()
+        if not parts:
+            return None
 
-    def infer_out_root(self) -> Path:
-        aoi_path = Path(self.config.aoi.path)
-        root = aoi_path.parent.parent if aoi_path.parent.name.lower() == "aoi" else aoi_path.parent
-        return root / "vector"
-    
-    def infer_root_slug(self) -> str:
-        aoi_path = Path(self.config.aoi.path)
-        root = aoi_path.parent.parent if aoi_path.parent.name.lower() == "aoi" else aoi_path.parent
-        return root.name.replace("-", "_").replace(" ", "_")
-    def dataset_prefix(self, ds_tag: str) -> str:
-        return f"{self.root_slug}_{ds_tag}"
-    
+        combined = gpd.GeoDataFrame(
+            pd.concat(parts, ignore_index=True),
+            crs=parts[0].crs,
+        )
+        return combined.dissolve().reset_index(drop=True) if len(combined) > 1 else combined
 
-    def connect_db(self) -> duckdb.DuckDBPyConnection:
-        con = duckdb.connect()
-        con.execute("INSTALL spatial; LOAD spatial;")
-        con.execute("INSTALL httpfs;  LOAD httpfs;")
-        con.execute("INSTALL s3;      LOAD s3;")
+    def _resolve_out_root(self, dataset_id: str, base_dir: Path) -> Path:
+        """
+        Output layout mirrors the source layout:
+            <base_dir>/<dataset_folder>/vector/
+        Falls back to config.output.root_dir / dataset_id if set.
+        """
+        if self.config.output.root_dir:
+            return Path(self.config.output.root_dir) / dataset_id / "vector"
+        return base_dir / dataset_id / "vector"
 
-        if getattr(self.config, "overture", None) and getattr(self.config.overture, "enabled", False):
-            con.execute(f"SET s3_region='{self.config.overture.s3_region}';")
-        elif getattr(self.config, "gba", None) and getattr(self.config.gba, "enabled", False):
-            con.execute(f"SET s3_region='{self.config.gba.s3_region}';")
-        con.execute("SET s3_url_style='path';")
-        con.execute("SET s3_endpoint='s3.us-west-2.amazonaws.com';")
-        con.execute("SET s3_use_ssl=true;")
-        return con
-    
+    # ── Source helpers (unchanged) ────────────────────────────────────────────
+
+    def _enabled_sources(self):
+        gba_on    = getattr(self.config, "gba",     None) and self.config.gba.enabled
+        ov_on     = getattr(self.config, "overture", None) and self.config.overture.enabled
+        globfp_on = getattr(self.config, "globfp",  None) and self.config.globfp.enabled
+        return gba_on, ov_on, globfp_on
+
+    def _dataset_prefix(self, slug: str, ds_tag: str) -> str:
+        return f"{slug}_{ds_tag}"
 
     def _gba_parquet_glob(self) -> str:
         s = str(self.config.gba.s3_url).rstrip("/")
         return s if "*" in s else s + "/*.parquet"
-        
+
     def get_overture_base_path(self) -> str:
-        # Overture STAC root exposes ".latest" and is designed to keep scripts stable across releases
         rel = str(self.config.overture.release)
         if rel == "latest":
             self.logger.info("Resolving latest Overture release from STAC")
@@ -109,55 +179,121 @@ class UrbanVectorDownloader:
             rel = j["latest"]
         return f"{self.config.overture.s3_url}{rel}".rstrip("/")
 
-    def run_connection(self) -> List[str]:
-        con = self.connect_db()
-        try:
-            gba_enabled      = getattr(self.config, "gba",     None) and self.config.gba.enabled
-            overture_enabled = getattr(self.config, "overture", None) and self.config.overture.enabled
-            globfp_enabled   = getattr(self.config, "globfp",  None) and self.config.globfp.enabled
+    def connect_db(self) -> duckdb.DuckDBPyConnection:
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        con.execute("INSTALL httpfs;  LOAD httpfs;")
+        con.execute("INSTALL s3;      LOAD s3;")
+        if getattr(self.config, "overture", None) and self.config.overture.enabled:
+            con.execute(f"SET s3_region='{self.config.overture.s3_region}';")
+        elif getattr(self.config, "gba", None) and self.config.gba.enabled:
+            con.execute(f"SET s3_region='{self.config.gba.s3_region}';")
+        con.execute("SET s3_url_style='path';")
+        con.execute("SET s3_endpoint='s3.us-west-2.amazonaws.com';")
+        con.execute("SET s3_use_ssl=true;")
+        return con
 
-            self.logger.info(
-                "Download pipeline | aois=%d | overwrite=%s | gba=%s | overture=%s | globfp=%s",
-                len(self.aoi), self.overwrite, gba_enabled, overture_enabled, globfp_enabled,
+    # ── Main entry point ──────────────────────────────────────────────────────
+
+    def run_connection(self) -> Dict[str, List[str]]:
+        """
+        Run the full download pipeline across all datasets.
+        Returns a dict of {dataset_id: [output_paths]}.
+        """
+        gba_on, ov_on, globfp_on = self._enabled_sources()
+        if not any([gba_on, ov_on, globfp_on]):
+            raise ValueError(
+                "No data source enabled. Set gba.enabled, overture.enabled, "
+                "or globfp.enabled to true in your config."
             )
 
-            if not any([gba_enabled, overture_enabled, globfp_enabled]):
-                raise ValueError(
-                    "No data source enabled. Set gba.enabled, overture.enabled, "
-                    "or globfp.enabled to true in your config."
+        # Resolve Overture base path once (makes one HTTP call if release=latest)
+        overture_base = self.get_overture_base_path() if ov_on else None
+        globfp_grid   = ensure_world_grid(self.config) if globfp_on else None
+
+        all_outputs: Dict[str, List[str]] = {}
+        con = self.connect_db()
+        try:
+            for ds in self.datasets:
+                self.logger.info(
+                    "── Dataset: %s | sources: gba=%s overture=%s globfp=%s",
+                    ds["id"], gba_on, ov_on, globfp_on,
                 )
+                outputs = []
 
-            outputs: List[str] = []
+                if gba_on:
+                    outputs += self._run_gba(con, ds)
+                if ov_on:
+                    outputs += self._run_overture(con, ds, overture_base)
+                if globfp_on:
+                    outputs += self._run_globfp(con, ds, globfp_grid)
 
-            if gba_enabled:
-                outputs += self._run_gba(con)
-
-            if overture_enabled:
-                outputs += self._run_overture(con)
-
-            if globfp_enabled:
-                outputs += self._run_globfp(con)
-
-            self.logger.info("Download complete | total outputs=%d", len(outputs))
-            return outputs
+                all_outputs[ds["id"]] = outputs
+                self.logger.info("Dataset %s complete | outputs=%d", ds["id"], len(outputs))
         finally:
             con.close()
 
+        total = sum(len(v) for v in all_outputs.values())
+        self.logger.info("All datasets complete | total outputs=%d", total)
+        return all_outputs
 
-    def _extract_all_aoi_rows(
-        self,
-        con,
-        out_name: str,
-        **extract_kwargs,
-    ) -> List[str]:
-        """
-        Iterate every AOI row, call extract_data_for_aoi with shared kwargs,
-        and return the list of written output paths.
-        `out_name` is the parquet filename (without directory).
-        """
+    # ── Per-source runners ────────────────────────────────────────────────────
+
+    def _run_gba(self, con, ds: Dict) -> List[str]:
+        parquet_glob = self._gba_parquet_glob()
+        prefix       = self._dataset_prefix(ds["slug"], "gba")
+        self.logger.info("GBA | dataset=%s | glob=%s", ds["id"], parquet_glob)
+        return self._extract_for_dataset(
+            con, ds,
+            out_name=f"{prefix}.parquet",
+            parquet_glob=parquet_glob,
+        )
+
+    def _run_overture(self, con, ds: Dict, base_path: str) -> List[str]:
+        theme   = self.config.overture.theme
+        types   = self.config.overture.types or []
+        prefix  = self._dataset_prefix(ds["slug"], "overture")
+        self.logger.info("Overture | dataset=%s | types=%s", ds["id"], types)
         outputs = []
-        for row in self.aoi.itertuples(index=False):
-            out_path = self.out_root / out_name
+        for typ in types:
+            outputs += self._extract_for_dataset(
+                con, ds,
+                out_name=f"{prefix}_{typ}.parquet",
+                base_path=base_path,
+                theme=theme,
+                typ=typ,
+            )
+        return outputs
+
+    def _run_globfp(self, con, ds: Dict, world_grid_shp: Path) -> List[str]:
+        prefix  = self._dataset_prefix(ds["slug"], "globfp")
+        outputs = []
+        aoi     = ds["aoi"]
+
+        for row in aoi.itertuples(index=False):
+            for grid_id in get_grid_ids_for_geometry(world_grid_shp, row.geometry):
+                out_path = ds["out_root"] / f"{prefix}_grid={grid_id}.parquet"
+                try:
+                    shp_path = download_globfp_grid_tile(self.config, grid_id)
+                    out_file = self.extract_data_for_aoi(
+                        con=con,
+                        aoi_geom=row.geometry,
+                        out_path=out_path,
+                        overwrite=self.overwrite,
+                        shp_path=shp_path,
+                    )
+                    outputs.append(out_file)
+                    self.logger.info("GloBFP OK | dataset=%s grid=%d -> %s",
+                                     ds["id"], grid_id, out_file)
+                except Exception:
+                    self.logger.exception("GloBFP failed | dataset=%s grid=%d", ds["id"], grid_id)
+        return outputs
+
+    def _extract_for_dataset(self, con, ds: Dict, out_name: str, **extract_kwargs) -> List[str]:
+        """Iterate AOI rows for one dataset and call extract_data_for_aoi."""
+        outputs = []
+        for row in ds["aoi"].itertuples(index=False):
+            out_path = ds["out_root"] / out_name
             try:
                 out_file = self.extract_data_for_aoi(
                     con=con,
@@ -169,79 +305,14 @@ class UrbanVectorDownloader:
                 outputs.append(out_file)
                 self.logger.info("Wrote: %s", out_file)
             except Exception:
-                self.logger.exception("Failed | out_path=%s", out_path)
+                self.logger.exception("Failed | dataset=%s out=%s", ds["id"], out_path)
         return outputs
 
+    # ── Core spatial query (unchanged) ───────────────────────────────────────
 
-    def _run_gba(self, con) -> List[str]:
-        parquet_glob = self._gba_parquet_glob()
-        file_prefix = self.dataset_prefix("gba")
-        self.logger.info("GBA enabled | glob=%s", parquet_glob)
-        return self._extract_all_aoi_rows(
-            con,
-            out_name=f"{file_prefix}.parquet",
-            parquet_glob=parquet_glob,
-        )
-
-
-    def _run_overture(self, con) -> List[str]:
-        theme     = self.config.overture.theme
-        types     = self.config.overture.types or []
-        base_path = self.get_overture_base_path()
-        file_prefix = self.dataset_prefix("overture")
-        self.logger.info("Overture enabled | types=%s", types)
-
-        outputs = []
-        for typ in types:
-            outputs += self._extract_all_aoi_rows(
-                con,
-                out_name=f"{file_prefix}_{typ}.parquet",
-                base_path=base_path,
-                theme=theme,
-                typ=typ,
-            )
-        return outputs
-
-    def _run_globfp(self, con) -> List[str]:
-        self.logger.info("GloBFP enabled")
-        world_grid_shp = ensure_world_grid(self.config)
-        file_prefix = self.dataset_prefix("globfp")
-        outputs = []
-
-        for row in self.aoi.itertuples(index=False):
-            for grid_id in get_grid_ids_for_geometry(world_grid_shp, row.geometry):
-                # out_path = self.out_root / f"{file_prefix}_grid={grid_id}.parquet"
-                out_path = self.out_root / f"{file_prefix}.parquet"
-                try:
-                    shp_path = download_globfp_grid_tile(self.config, grid_id)
-                    out_file = self.extract_data_for_aoi(
-                        con=con,
-                        aoi_geom=row.geometry,
-                        out_path=out_path,
-                        overwrite=self.overwrite,
-                        shp_path=shp_path,
-                    )
-                    outputs.append(out_file)
-                    self.logger.info("GloBFP OK | grid=%d -> %s", grid_id, out_file)
-                except Exception:
-                    self.logger.exception("GloBFP failed | grid=%d", grid_id)
-
-        return outputs
-
-    def extract_data_for_aoi(
-        self,
-        *,
-        con,
-        aoi_geom,
-        out_path,
-        overwrite=False,
-        # source: supply exactly one of these
-        shp_path=None,
-        parquet_glob=None,
-        base_path=None,
-        theme="",
-        typ="",
-    ):
+    def extract_data_for_aoi(self, *, con, aoi_geom, out_path, overwrite=False,
+                              shp_path=None, parquet_glob=None, base_path=None,
+                              theme="", typ=""):
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if out_path.exists() and not overwrite:
@@ -249,13 +320,9 @@ class UrbanVectorDownloader:
             return str(out_path)
 
         source_expr, bbox_filter = self.filter_by_source(
-            shp_path=shp_path,
-            parquet_glob=parquet_glob,
-            base_path=base_path,
-            theme=theme,
-            typ=typ,
+            shp_path=shp_path, parquet_glob=parquet_glob,
+            base_path=base_path, theme=theme, typ=typ,
         )
-
         minx, miny, maxx, maxy = aoi_geom.bounds
         aoi_geojson = json.dumps(mapping(aoi_geom)).replace("'", "''")
 
@@ -265,54 +332,40 @@ class UrbanVectorDownloader:
                 SELECT b.*
                 FROM {source_expr} AS b, aoi
                 WHERE {bbox_filter.format(minx=minx, miny=miny, maxx=maxx, maxy=maxy)}
-                AND ST_Intersects(b.{self._geom_col(shp_path)}, aoi.geom)
+                  AND ST_Intersects(b.{self._geom_col(shp_path)}, aoi.geom)
             )
             TO '{out_path}' (FORMAT PARQUET);
         """
-        self.logger.info(
-            "Spatial query | source=%s | bounds=[%.4f, %.4f, %.4f, %.4f]",
-            source_expr[:60], minx, miny, maxx, maxy,
-        )
+        self.logger.info("Spatial query | source=%s | bounds=[%.4f,%.4f,%.4f,%.4f]",
+                         source_expr[:60], minx, miny, maxx, maxy)
         con.execute(sql)
         return str(out_path)
 
-
     def filter_by_source(self, *, shp_path, parquet_glob, base_path, theme, typ):
-        """Return (FROM expression, WHERE bbox template) for the requested source."""
         if shp_path is not None:
-            expr   = f"ST_Read('{shp_path}')"
-            bbox   = (
-                "ST_XMin(ST_Envelope(b.geom)) <= {maxx}"
-                " AND ST_XMax(ST_Envelope(b.geom)) >= {minx}"
-                " AND ST_YMin(ST_Envelope(b.geom)) <= {maxy}"
-                " AND ST_YMax(ST_Envelope(b.geom)) >= {miny}"
+            return (
+                f"ST_Read('{shp_path}')",
+                "ST_XMin(ST_Envelope(b.geom)) <= {maxx} AND ST_XMax(ST_Envelope(b.geom)) >= {minx}"
+                " AND ST_YMin(ST_Envelope(b.geom)) <= {maxy} AND ST_YMax(ST_Envelope(b.geom)) >= {miny}",
             )
-        elif parquet_glob is not None:
-            expr   = f"read_parquet('{parquet_glob}', hive_partitioning=true)"
-            bbox   = (
-                "b.bbox.xmin <= {maxx} AND b.bbox.xmax >= {minx}"
-                " AND b.bbox.ymin <= {maxy} AND b.bbox.ymax >= {miny}"
-            )
+        if parquet_glob is not None:
+            glob = parquet_glob
         elif base_path is not None:
-            glob   = f"{base_path}/theme={theme}/type={typ}/*.parquet"
-            expr   = f"read_parquet('{glob}', hive_partitioning=true)"
-            bbox   = (
-                "b.bbox.xmin <= {maxx} AND b.bbox.xmax >= {minx}"
-                " AND b.bbox.ymin <= {maxy} AND b.bbox.ymax >= {miny}"
-            )
+            glob = f"{base_path}/theme={theme}/type={typ}/*.parquet"
         else:
-            raise ValueError(
-                "provide exactly one of: shp_path, parquet_glob, or base_path."
-            )
-        return expr, bbox
-
+            raise ValueError("Provide exactly one of: shp_path, parquet_glob, or base_path.")
+        return (
+            f"read_parquet('{glob}', hive_partitioning=true)",
+            "b.bbox.xmin <= {maxx} AND b.bbox.xmax >= {minx}"
+            " AND b.bbox.ymin <= {maxy} AND b.bbox.ymax >= {miny}",
+        )
 
     @staticmethod
     def _geom_col(shp_path) -> str:
-        """Shapefiles use 'geom'; parquet sources use 'geometry'."""
         return "geom" if shp_path is not None else "geometry"
 
 
 if __name__ == "__main__":
-    config_path = "configs/config.yaml"
-    UrbanVectorDownloader(config_path).run_connection()
+    BASE   = "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation"
+    CONFIG = f"{BASE}/configs/overture.yaml"
+    UrbanVectorDownloader(CONFIG).run_connection()
