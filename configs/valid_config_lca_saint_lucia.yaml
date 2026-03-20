@@ -1,0 +1,20 @@
+city: lca-saint-lucia
+root_dir: .
+
+crs: EPSG:32636         # UTM zone 36N
+
+aoi_path: data/01_raw/lca-saint-lucia/aoi/saint_lucia-aoi.geojson
+
+reference_vector: data/01_raw/lca-saint-lucia/vector/saint_lucia_WGB_rooftop_classification.geojson
+
+candidates:
+- name: overture
+  path: data/01_raw/lca-saint-lucia/vector/lca_saint_lucia_overture_1_building.parquet
+- name: gba
+  path: data/01_raw/lca-saint-lucia/vector/lca_saint_lucia_gba_1_gba_lod1.parquet
+
+min_area_m2: 20           # filter very tiny polygons
+tile_size_m: 1000         # 1 km tiles
+tau_overlap: 0.5          # minimum IoU for a match
+tau_buffer_m: 2.0         # positional tolerance (optional, not yet used below)
+tau_boundary: 2.0         # tolerance for calculating boundary overlap
