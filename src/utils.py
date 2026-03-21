@@ -427,6 +427,7 @@ def read_csv(config, csv_path: Path) -> List[Dict]:
     Each unique `id_col` value becomes one dataset whose AOI is the
     union of all `|`-delimited paths in `aoi_file_path`.
     """
+    # TODO: update read csv to correspond to the new aoi tracker csv
     aoi_config  = config.aoi
     base_dir = Path(aoi_config.base_dir) if aoi_config.base_dir else csv_path.parent
     id_col   = aoi_config.id_col          # "Dataset code"
