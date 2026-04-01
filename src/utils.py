@@ -1,22 +1,21 @@
-""" Utility functions for loading and exploring datasets within the Global Satellite Derived Urban Dataset Validation 
+""" Utility functions for loading and exploring datasets within the Global Satellite Derived Urban Dataset Validation project.
 """
 from __future__ import annotations
+import gc
 import os
 import re
 import requests
-from typing import Optional, Union
-import datetime
+from typing import Optional, Union, Dict, List, Tuple
+from pathlib import Path
 import zipfile
-from typing import List, Tuple
 from dataclasses import dataclass
 
-import yaml
-from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import box
 import numpy as np
 from src.preprocess import validate_aoi_geometry
+import pyproj
 
 FIGSHARE_API = "https://api.figshare.com/v2"
 GLOBFP_PARTS: List[Tuple[int, int, int]] = [
@@ -31,6 +30,9 @@ GLOBFP_PARTS: List[Tuple[int, int, int]] = [
     (2000, 2299, 28904453),
     (2300, 2599, 28906499),
 ]
+
+# rows per chunk when computing UTM areas
+_AREA_CHUNK_SIZE = int(os.environ.get("AREA_CHUNK_SIZE", 50_000))
 
 @dataclass(frozen=True)
 class FigshareFile:
@@ -74,7 +76,6 @@ def get_grid_ids_for_geometry(world_grid_shp: Path, aoi_geom_4326) -> List[int]:
         """Return sorted list of grid IDs that intersect the given geometry."""
         grid = gpd.read_file(world_grid_shp).to_crs("EPSG:4326")
 
-        # Tolerate various field name conventions
         cand_fields = ["gridID", "grid_id", "grid_ID", "GRIDID", "GRID_ID", "id", "ID"]
         grid_field  = next((c for c in cand_fields if c in grid.columns), None)
         if grid_field is None:
@@ -102,10 +103,6 @@ def get_figshare_list_files(article_id: int) -> List[FigshareFile]:
 def select_globfp_tile_files(
         files: List[FigshareFile], grid_id: int
     ) -> List[FigshareFile]:
-    """
-    Match Figshare files to a specific grid_id.
-    Prefers .zip bundles; falls back to individual shapefile components.
-    """
     gid = str(grid_id)
     zips = [f for f in files
             if f.name.lower().endswith(".zip")
@@ -121,19 +118,13 @@ def select_globfp_tile_files(
     if components:
         return components
 
-    # last resort
     return [f for f in files if f"{gid}_" in f.name]
 
 
 def download_globfp_grid_tile(config, grid_id: int) -> Path:
-    """
-    Download tile files for *grid_id* from Figshare (if not cached).
-    Returns path to the tile .shp file.
-    """
     tiles_dir = globfp_local_dir(config) / "tiles" / f"grid_id={grid_id}"
     tiles_dir.mkdir(parents=True, exist_ok=True)
 
-    # if already cached
     existing = list(tiles_dir.glob("*.shp"))
     if existing:
         return existing[0]
@@ -169,10 +160,6 @@ def download_globfp_grid_tile(config, grid_id: int) -> Path:
 
 
 def ensure_world_grid(config) -> Path:
-    """
-    Download + unzip world_grid.zip from Zenodo if not already cached.
-    Returns path to world_grid.shp.
-    """
     local_dir = globfp_local_dir(config)
     record_id = config.globfp.zenodo_record
     zip_path  = local_dir / "world_grid.zip"
@@ -201,61 +188,68 @@ def _read_gdf(path: Union[str, Path]) -> gpd.GeoDataFrame:
         return gpd.read_parquet(path)
     return gpd.read_file(path)
 
+
 def load_buildings(
     path: Union[str, Path],
     *,
     crs_work: str,
     min_area_m2: float,
     fix_invalid_geoms: bool = False,
-    compute_area_mode: str = "utm",   # "utm" (robust) | "work_crs" (fast)
+    compute_area_mode: str = "utm",
     logger=None,
 ) -> gpd.GeoDataFrame:
     """
-    Load building footprints, reproject, compute area in m², and filter.
+    Load building footprints, reproject, compute area, filter by min area.
 
-    Parameters
-    ----------
-    crs_work : str
-        CRS used for spatial ops downstream (tiling, sjoin, etc.)
-    compute_area_mode : str
-        - "utm": compute area in meters using estimate_utm_crs() (recommended)
-        - "work_crs": compute area directly in crs_work (only safe if projected in meters)
+    MEMORY FIX: The original code called ``gdf.to_crs(metric_crs)`` which
+    duplicated the *entire* geometry column in memory.  For a 2 M-row file
+    that can be 3-6 GB of extra peak RAM — enough to OOM on Colab.
+
+    The fix processes rows in chunks of ``_AREA_CHUNK_SIZE`` (default 50 k).
+    Each chunk is reprojected, its ``.area`` extracted into a numpy slice,
+    and then the reprojected chunk is discarded.  Peak overhead is bounded
+    by ``chunk_size * avg_geom_bytes`` instead of ``n_rows * avg_geom_bytes``.
     """
     path = Path(path)
-    gdf = _read_gdf(path)
+    gdf = (gpd.read_parquet(path) if path.suffix.lower() in {".parquet", ".geoparquet"}
+           else gpd.read_file(path))
 
     if gdf.crs is None:
-        raise ValueError(f"{path} has no CRS defined. (GeoParquet should store CRS; check writer.)")
+        raise ValueError(f"{path} has no CRS defined.")
 
-    # Reproject to working CRS for downstream ops
     gdf = gdf.to_crs(crs_work)
 
-    # Optionally repair invalid geometries
     if fix_invalid_geoms:
         gdf = validate_aoi_geometry(gdf, label=path.name)
 
-    # Compute area in true m²
-    try:
-        if compute_area_mode == "utm":
-            metric_crs = gdf.estimate_utm_crs()
-            gdf_metric = gdf.to_crs(metric_crs)
-            gdf["area_m2"] = gdf_metric.geometry.area
-        elif compute_area_mode == "work_crs":
-            # Only correct if crs_work is projected in meters
-            gdf["area_m2"] = gdf.geometry.area
-        else:
-            raise ValueError(f"Unknown compute_area_mode={compute_area_mode!r}. Use 'utm' or 'work_crs'.")
-    except Exception as e:
-        raise ValueError(
-            f"Failed to compute area in meters for {path}. "
-            f"Check CRS and geometry validity. Underlying error: {e}"
-        )
+    if compute_area_mode == "utm":
+        metric_crs = gdf.estimate_utm_crs()
+        n = len(gdf)
+        areas = np.empty(n, dtype=np.float64)
+
+        # ── FIX: chunked reproject instead of full-copy ───────────────
+        chunk = _AREA_CHUNK_SIZE
+        for start in range(0, n, chunk):
+            end = min(start + chunk, n)
+            chunk_gdf = gdf.iloc[start:end].to_crs(metric_crs)
+            areas[start:end] = chunk_gdf.geometry.area.values
+            del chunk_gdf  # free reprojected chunk immediately
+
+        del metric_crs
+        gc.collect()
+
+        gdf["area_m2"] = areas
+        del areas
+    elif compute_area_mode == "work_crs":
+        gdf["area_m2"] = gdf.geometry.area
+    else:
+        raise ValueError(f"Unknown compute_area_mode={compute_area_mode!r}")
 
     gdf = gdf[gdf["area_m2"] >= float(min_area_m2)].copy()
     gdf.reset_index(drop=True, inplace=True)
 
     if logger:
-        logger.info("Loaded buildings | n=%d | min_area_m2=%.2f | path=%s", len(gdf), float(min_area_m2), path)
+        logger.info("Loaded buildings | n=%d | path=%s", len(gdf), path)
 
     return gdf
 
@@ -267,55 +261,28 @@ def load_aoi(
     dissolve: bool = False,
     logger=None,
 ) -> gpd.GeoDataFrame:
-    """
-    Load AOI polygon(s), optionally buffer, reproject, and optionally dissolve.
-
-    Parameters
-    ----------
-    path : str | Path
-        AOI file path (geojson/gpkg/parquet/etc.)
-    crs_out : str
-        Desired CRS output (e.g., EPSG:4326).
-    buffer_meters : float
-        Buffer distance in meters (applied in a projected CRS).
-    dissolve : bool
-        If True, dissolve all features into one geometry (single AOI).
-    assume_crs_if_missing : str
-        CRS to assume if input is missing CRS metadata.
-    logger : logging.Logger | None
-        Optional logger for messages.
-
-    Returns
-    -------
-    GeoDataFrame
-    """
     path = Path(path)
-    # aoi = gpd.read_file(path)
     aoi = _read_gdf(path)
 
-    if aoi.crs is None: # assume crs if missing
+    if aoi.crs is None:
         if logger:
             logger.warning("AOI CRS missing; assuming %s", crs_out)
         aoi = aoi.set_crs("EPSG:4326")
 
-    # optional dissolve early (keeps semantics consistent across pipeline)
     if dissolve and len(aoi) > 1:
         aoi = aoi.dissolve().reset_index(drop=True)
 
-    # buffering in meters requires a projected CRS
     buffer_meters = float(buffer_meters or 0.0)
     if buffer_meters > 0:
-        # If AOI CRS is not projected, reproject to a metric CRS for buffer then return
         if not aoi.crs.is_projected:
             if logger:
                 logger.warning("AOI CRS is geographic; reprojecting to EPSG:3857 for buffering")
-            aoi_metric = aoi.to_crs("EPSG:3857") # why pick EPSG:3857
+            aoi_metric = aoi.to_crs("EPSG:3857")
             aoi_metric["geometry"] = aoi_metric.geometry.buffer(buffer_meters)
             aoi = aoi_metric.to_crs(aoi.crs)
         else:
             aoi["geometry"] = aoi.geometry.buffer(buffer_meters)
 
-    # reproject to desired CRS
     if str(aoi.crs) != str(crs_out):
         if logger:
             logger.info("Reprojecting AOI | %s -> %s", aoi.crs, crs_out)
@@ -333,11 +300,6 @@ def make_tiles(
     clip_to_aoi: bool = False,
     snap_origin: bool = False,
 ) -> gpd.GeoDataFrame:
-    """
-    Create a regular grid of square tiles covering the AOI.
-
-    Assumes AOI is already in a projected CRS with meters.
-    """
     if aoi.empty:
         return gpd.GeoDataFrame({"tile_id": [], "geometry": []}, crs=aoi.crs)
 
@@ -345,14 +307,12 @@ def make_tiles(
     minx, miny, maxx, maxy = aoi_union.bounds
     tile = float(tile_size_m)
 
-    # Optional: snap grid origin to multiples of tile size for consistency across runs/cities
     if snap_origin:
         minx = np.floor(minx / tile) * tile
         miny = np.floor(miny / tile) * tile
         maxx = np.ceil(maxx / tile) * tile
         maxy = np.ceil(maxy / tile) * tile
 
-    # Robust stepping via counts (avoids int truncation + float accumulation)
     nx = int(np.ceil((maxx - minx) / tile))
     ny = int(np.ceil((maxy - miny) / tile))
 
@@ -378,59 +338,32 @@ def make_tiles(
 def subset_by_tile(buildings: gpd.GeoDataFrame,
                    sindex,
                    tile_geom):
-    """
-    Return subset of buildings intersecting a tile geometry.
-
-    - uses spatial index for bbox prefilter
-    - preserves original indices (no reset_index)
-    """
     possible_idx = list(sindex.intersection(tile_geom.bounds))
     if not possible_idx:
         return buildings.iloc[[]].copy()
 
     subset = buildings.iloc[possible_idx]
     subset = subset[subset.intersects(tile_geom)].copy()
-    # IMPORTANT: do NOT reset index here – we want original indices
     return subset
 
 def resolve_out_root(config, dataset_id: str, base_dir: Path) -> Path:
-    """
-    Output layout mirrors the source layout:
-        <base_dir>/<dataset_folder>/vector/
-    Falls back to config.output.root_dir / dataset_id if set.
-    """
     if config.output.root_dir:
         return Path(config.output.root_dir) / dataset_id / "vector"
     return base_dir / dataset_id / "vector"
 
-
 def load_all_aois(config) -> List[Dict]:
-    """
-    Returns a list of dicts, one per dataset:
-        {"id": str, "aoi": GeoDataFrame, "out_root": Path, "slug": str}
-
-    Handles two input modes:
-      - CSV reference inventory (detected by .csv suffix)
-      - Single AOI file (any other extension — legacy mode)
-    """
     aoi_config  = config.aoi
     aoi_path = Path(aoi_config.path)
 
     if aoi_path.suffix.lower() == ".csv":
         return read_csv(config, aoi_path)
     else:
-        return read_json(config, aoi_path) # single AOI file, one dataset
+        return read_json(config, aoi_path)
 
 def read_csv(config, csv_path: Path) -> List[Dict]:
-    """
-    Parse the reference inventory CSV.
-    Each unique `id_col` value becomes one dataset whose AOI is the
-    union of all `|`-delimited paths in `aoi_file_path`.
-    """
-    # TODO: update read csv to correspond to the new aoi tracker csv
     aoi_config  = config.aoi
     base_dir = Path(aoi_config.base_dir) if aoi_config.base_dir else csv_path.parent
-    id_col   = aoi_config.id_col          # "Dataset code"
+    id_col   = aoi_config.id_col
 
     df = pd.read_csv(csv_path)
 
@@ -439,7 +372,6 @@ def read_csv(config, csv_path: Path) -> List[Dict]:
         df = df[df["Suitable (yes/N)"].str.strip().str.lower() == "yes"]
         print("Filtered inventory: %d -> %d suitable rows", before, len(df))
 
-    # Deduplicate by dataset id — keep first occurrence
     df = df.drop_duplicates(subset=[id_col])
 
     datasets = []
@@ -447,7 +379,6 @@ def read_csv(config, csv_path: Path) -> List[Dict]:
         dataset_id  = str(row[id_col])
         raw_paths   = str(row.get("aoi_file_path", ""))
 
-        # Resolve each `|`-delimited relative path
         aoi_paths = [
             base_dir / p.strip()
             for p in raw_paths.split("|")
@@ -459,7 +390,6 @@ def read_csv(config, csv_path: Path) -> List[Dict]:
                                 dataset_id, aoi_paths[:3])
             continue
 
-        # Load and dissolve all AOI files for this dataset into one geometry
         aoi = load_and_dissolve_aois(config, existing, dataset_id)
         if aoi is None or aoi.empty:
             print("Dataset %s: empty AOI after loading, skipping", dataset_id)
@@ -474,13 +404,11 @@ def read_csv(config, csv_path: Path) -> List[Dict]:
     return datasets
 
 def read_json(config, aoi_path: Path) -> List[Dict]:
-    """_datasets_from_single_aoi: Legacy mode: wrap a single AOI file as one dataset entry."""
     aoi = load_aoi(
         aoi_path,
         crs_out=config.aoi.crs_out,
         buffer_meters=config.aoi.buffer_meters,
         dissolve=True,
-        # logger=self.logger,
     )
     slug     = aoi_path.parent.parent.name.replace("-", "_").replace(" ", "_")
     out_root = aoi_path.parent.parent / "vector"
@@ -489,13 +417,11 @@ def read_json(config, aoi_path: Path) -> List[Dict]:
     return [{"id": dataset_id, "slug": slug, "aoi": aoi, "out_root": out_root}]
 
 def load_and_dissolve_aois(config, paths: List[Path], dataset_id: str) -> Optional[gpd.GeoDataFrame]:
-    """Load multiple AOI files and dissolve into a single GeoDataFrame."""
     parts = []
     for p in paths:
         try:
             gdf = load_aoi(p, crs_out=config.aoi.crs_out,
                    buffer_meters=config.aoi.buffer_meters,
-                    #    logger=self.logger)
             )
             parts.append(gdf)
         except Exception:
@@ -509,3 +435,48 @@ def load_and_dissolve_aois(config, paths: List[Path], dataset_id: str) -> Option
         crs=parts[0].crs,
     )
     return combined.dissolve().reset_index(drop=True) if len(combined) > 1 else combined
+
+def get_projected_crs(gdf: gpd.GeoDataFrame) -> str:
+    """
+    Return the best UTM EPSG code for the centroid of a GeoDataFrame.
+
+    Parameters
+    ----------
+    gdf : GeoDataFrame
+        Must be in EPSG:4326 (or any geographic CRS).
+
+    Returns
+    -------
+    str
+        EPSG string like "EPSG:32637" (UTM zone 37N).
+    """
+    # make it is in lon/lat
+    if gdf.crs and not gdf.crs.is_geographic:
+        gdf = gdf.to_crs(epsg=4326)
+
+    # get centroid of the union of all geometries
+    bounds = gdf.total_bounds  # (minx, miny, maxx, maxy)
+    lon = (bounds[0] + bounds[2]) / 2
+    lat = (bounds[1] + bounds[3]) / 2
+
+    # use pyproj to find the best UTM zone
+    utm_crs_list = pyproj.database.query_utm_crs_info(
+        datum_name="WGS 84",
+        area_of_interest=pyproj.aoi.AreaOfInterest(
+            west_lon_degree=lon,
+            south_lat_degree=lat,
+            east_lon_degree=lon,
+            north_lat_degree=lat,
+        ),
+    )
+
+    if utm_crs_list:
+        utm = utm_crs_list[0]
+        return f"EPSG:{utm.code}"
+
+    # fallback: calculate manually
+    zone_number = int((lon + 180) / 6) + 1
+    if lat >= 0:
+        return f"EPSG:{32600 + zone_number}"
+    else:
+        return f"EPSG:{32700 + zone_number}"
