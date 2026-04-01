@@ -195,20 +195,26 @@ def load_buildings(
     crs_work: str,
     min_area_m2: float,
     fix_invalid_geoms: bool = False,
-    compute_area_mode: str = "utm",
+    compute_area_mode: str = "auto",
     logger=None,
 ) -> gpd.GeoDataFrame:
     """
     Load building footprints, reproject, compute area, filter by min area.
 
-    MEMORY FIX: The original code called ``gdf.to_crs(metric_crs)`` which
-    duplicated the *entire* geometry column in memory.  For a 2 M-row file
-    that can be 3-6 GB of extra peak RAM — enough to OOM on Colab.
+    Changes vs. original
+    --------------------
+    1.  Null / empty geometries are dropped BEFORE any CRS operation,
+        preventing ``estimate_utm_crs`` from crashing on NaN bounds
+        (the GloBFP / globfp parquet bug).
 
-    The fix processes rows in chunks of ``_AREA_CHUNK_SIZE`` (default 50 k).
-    Each chunk is reprojected, its ``.area`` extracted into a numpy slice,
-    and then the reprojected chunk is discarded.  Peak overhead is bounded
-    by ``chunk_size * avg_geom_bytes`` instead of ``n_rows * avg_geom_bytes``.
+    2.  ``compute_area_mode`` default changed from ``"utm"`` to ``"auto"``:
+        - If ``crs_work`` is already projected (metres), areas are computed
+          directly — no chunked reproject needed, much faster.
+        - If ``crs_work`` is geographic (degrees), falls back to the
+          chunked-UTM approach.
+
+    3.  The chunked-UTM path now also drops null geometries before calling
+        ``estimate_utm_crs``, as a safety net.
     """
     path = Path(path)
     gdf = (gpd.read_parquet(path) if path.suffix.lower() in {".parquet", ".geoparquet"}
@@ -217,31 +223,63 @@ def load_buildings(
     if gdf.crs is None:
         raise ValueError(f"{path} has no CRS defined.")
 
+    # ── FIX 1: drop null / empty geometries BEFORE any reprojection ──────────
+    n_before = len(gdf)
+    gdf = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty].copy()
+    n_dropped = n_before - len(gdf)
+    if n_dropped > 0:
+        msg = f"[{path.name}] Dropped {n_dropped} null/empty geometries ({n_before} → {len(gdf)})"
+        if logger:
+            logger.warning(msg)
+        else:
+            print(msg)
+
+    if gdf.empty:
+        gdf = gdf.to_crs(crs_work)
+        gdf["area_m2"] = np.float64()
+        return gdf
+
     gdf = gdf.to_crs(crs_work)
 
     if fix_invalid_geoms:
         gdf = validate_aoi_geometry(gdf, label=path.name)
 
-    if compute_area_mode == "utm":
+    # ── FIX 2: decide area computation strategy based on crs_work ────────────
+    if compute_area_mode == "auto":
+        # If crs_work is projected (units = metres), compute area directly
+        crs_obj = pyproj.CRS(crs_work)
+        if crs_obj.is_projected:
+            compute_area_mode = "work_crs"
+        else:
+            compute_area_mode = "utm"
+
+    if compute_area_mode == "work_crs":
+        # crs_work is already in metres — just use .area directly
+        gdf["area_m2"] = gdf.geometry.area
+
+    elif compute_area_mode == "utm":
+        # crs_work is geographic — need to reproject to UTM in chunks
+        # Safety: drop any remaining null geometries before estimate_utm_crs
+        valid_mask = gdf.geometry.notna() & ~gdf.geometry.is_empty
+        if not valid_mask.all():
+            gdf = gdf[valid_mask].copy()
+
         metric_crs = gdf.estimate_utm_crs()
         n = len(gdf)
         areas = np.empty(n, dtype=np.float64)
 
-        # ── FIX: chunked reproject instead of full-copy ───────────────
         chunk = _AREA_CHUNK_SIZE
         for start in range(0, n, chunk):
             end = min(start + chunk, n)
             chunk_gdf = gdf.iloc[start:end].to_crs(metric_crs)
             areas[start:end] = chunk_gdf.geometry.area.values
-            del chunk_gdf  # free reprojected chunk immediately
+            del chunk_gdf
 
         del metric_crs
         gc.collect()
 
         gdf["area_m2"] = areas
         del areas
-    elif compute_area_mode == "work_crs":
-        gdf["area_m2"] = gdf.geometry.area
     else:
         raise ValueError(f"Unknown compute_area_mode={compute_area_mode!r}")
 

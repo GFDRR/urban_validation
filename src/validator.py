@@ -36,9 +36,10 @@ import pandas as pd
 import yaml
 
 # ── project imports ──────────────────────────────────────────────────────────
-from src.utils import load_aoi, make_tiles, load_buildings, subset_by_tile, get_projected_crs
+from src.utils import load_aoi, make_tiles, load_buildings, subset_by_tile
 from src.metrics import compute_tile_metrics
 from src.output import summarize_city, save_figure, fig_name
+from src.utils import get_projected_crs
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -180,6 +181,7 @@ def process_aoi(row: pd.Series, cfg: dict, root: Path) -> bool:
         min_area_m2=min_area,
         fix_invalid_geoms=fix_geoms,
     )
+    ref_sindex = ref_all.sindex  # build once, used by all candidates
     log.info("[%s] Reference buildings: %d", folder_name, len(ref_all))
 
     # ── 3. Iterate over candidate datasets ────────────────────────────────────
@@ -222,8 +224,7 @@ def process_aoi(row: pd.Series, cfg: dict, root: Path) -> bool:
         ds_match_chunks: list[pd.DataFrame] = []
         MATCH_FLUSH_INTERVAL = 50  # flush matches to disk every N tiles
 
-        # Build spatial indices once per candidate
-        ref_sindex = ref_all.sindex
+        # Build spatial index for this candidate (ref_sindex built once above)
         cand_sindex = cand_all.sindex
 
         for tile_idx, tile_row in enumerate(tiles.itertuples()):
