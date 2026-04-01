@@ -74,9 +74,14 @@ Caroline Gevaert,
 Pierre Chrzanowski,
 
 ## Acknowledgment
-GFDRR, World Bank
-Gates Foundation
-HOTOSM Datasets
-World Bank Datasets 
-Partner Countries for on ground validation datasets
+GFDRR, World Bank,
+
+Gates Foundation,
+
+HOTOSM Datasets, 
+
+World Bank Datasets, 
+
+Partner Countries for on ground validation datasets,
+ 
 Feedback from other Team in the World Bank Digital Earth Partnership 
