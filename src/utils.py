@@ -2,6 +2,7 @@
 """
 from __future__ import annotations
 import gc
+import json
 import os
 import re
 import requests
@@ -10,8 +11,13 @@ from pathlib import Path
 import zipfile
 from dataclasses import dataclass
 
+import logging
+import shutil
+
 import geopandas as gpd
 import pandas as pd
+import rasterio
+from rasterio.warp import calculate_default_transform, reproject, Resampling
 from shapely.geometry import box
 import numpy as np
 from src.preprocess import validate_aoi_geometry
@@ -315,7 +321,7 @@ def load_aoi(
         if not aoi.crs.is_projected:
             if logger:
                 logger.warning("AOI CRS is geographic; reprojecting to EPSG:3857 for buffering")
-            aoi_metric = aoi.to_crs("EPSG:3857")
+            aoi_metric = aoi.to_crs("EPSG:3857") # TODO: this should not be harcoded — ideally we would use a local UTM zone
             aoi_metric["geometry"] = aoi_metric.geometry.buffer(buffer_meters)
             aoi = aoi_metric.to_crs(aoi.crs)
         else:
@@ -384,94 +390,121 @@ def subset_by_tile(buildings: gpd.GeoDataFrame,
     subset = subset[subset.intersects(tile_geom)].copy()
     return subset
 
-def resolve_out_root(config, dataset_id: str, base_dir: Path) -> Path:
-    if config.output.root_dir:
-        return Path(config.output.root_dir) / dataset_id / "vector"
-    return base_dir / dataset_id / "vector"
+def resolve_out_root(config, dataset_id: str, subdir: str = "vector") -> Path:
+    """Resolve the output directory for a dataset.
+
+    If output.use_base_dir_for_output is true (default):
+        <aoi.base_dir>/<dataset_id>/<subdir>/
+    Otherwise:
+        <output.root_dir>/<dataset_id>/<subdir>/
+    """
+    use_base = config.output.use_base_dir_for_output
+    if use_base:
+        p = Path(config.aoi.base_dir) / dataset_id / subdir
+    else:
+        root = config.output.root_dir or "data/outputs"
+        p = Path(root) / dataset_id / subdir
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
 
 def load_all_aois(config) -> List[Dict]:
-    aoi_config  = config.aoi
-    aoi_path = Path(aoi_config.path)
+    """Parse the AOI inventory and return a list of dataset dicts.
 
+    Returns list of {"id": str, "slug": str, "aoi": GeoDataFrame}.
+    Output directories are NOT included — callers resolve those per download type.
+    """
+    aoi_path = Path(config.aoi.path)
     if aoi_path.suffix.lower() == ".csv":
-        return read_csv(config, aoi_path)
+        return _load_aois_from_csv(config)
     else:
-        return read_json(config, aoi_path)
+        return _load_aoi_from_file(config, aoi_path)
 
-def read_csv(config, csv_path: Path) -> List[Dict]:
-    aoi_config  = config.aoi
-    base_dir = Path(aoi_config.base_dir) if aoi_config.base_dir else csv_path.parent
-    id_col   = aoi_config.id_col
 
-    df = pd.read_csv(csv_path)
+def _load_aois_from_csv(config) -> List[Dict]:
+    aoi_cfg  = config.aoi
+    csv_path = Path(aoi_cfg.path)
+    base_dir = Path(aoi_cfg.base_dir)
+    id_col   = aoi_cfg.id_col
+    crs_out  = aoi_cfg.crs_out
 
-    if aoi_config.filter_suitable:
+    df = pd.read_csv(csv_path, dtype=str)
+
+    # Drop rows with no AOI file on disk
+    if "has_aoi_file" in df.columns:
+        df = df[df["has_aoi_file"].str.strip().str.upper() == "TRUE"]
+
+    # Suitable filter
+    if aoi_cfg.filter_suitable and "Suitable" in df.columns:
         before = len(df)
-        df = df[df["Suitable (yes/N)"].str.strip().str.lower() == "yes"]
-        print("Filtered inventory: %d -> %d suitable rows", before, len(df))
+        df = df[df["Suitable"].str.strip().str.lower() == "yes"]
+        print(f"Filtered inventory: {before} -> {len(df)} suitable rows")
 
-    df = df.drop_duplicates(subset=[id_col])
+    # Optional high-quality filter
+    if aoi_cfg.high_quality_only and "is_high_quality" in df.columns:
+        before = len(df)
+        df = df[df["is_high_quality"].str.strip().str.upper() == "TRUE"]
+        print(f"Filtered inventory: {before} -> {len(df)} high-quality rows")
 
-    datasets = []
-    for _, row in df.iterrows():
-        dataset_id  = str(row[id_col])
-        raw_paths   = str(row.get("aoi_file_path", ""))
+    df = df.dropna(subset=[id_col, "aoi_file_name"])
+    df = df[df["aoi_file_name"].str.strip() != ""]
 
-        aoi_paths = [
-            base_dir / p.strip()
-            for p in raw_paths.split("|")
-            if p.strip()
-        ]
+    datasets: List[Dict] = []
+    for dataset_id, group in df.groupby(id_col, sort=False):
+        dataset_id = str(dataset_id)
+
+        # Collect AOI paths — supports pipe-separated values and multiple rows
+        aoi_paths: List[Path] = []
+        for _, row in group.iterrows():
+            for part in str(row["aoi_file_name"]).split("|"):
+                part = part.strip()
+                if part:
+                    aoi_paths.append(base_dir / dataset_id / aoi_cfg.aoi_subdir / part)
+
         existing = [p for p in aoi_paths if p.exists()]
         if not existing:
-            print("Dataset %s: no AOI files found, skipping. Paths tried: %s",
-                                dataset_id, aoi_paths[:3])
+            print(f"Dataset {dataset_id}: no AOI files found on disk, skipping.")
             continue
 
-        aoi = load_and_dissolve_aois(config, existing, dataset_id)
+        aoi = _load_and_dissolve_aois(existing, dataset_id,
+                                       crs_out=crs_out,
+                                       buffer_meters=aoi_cfg.buffer_meters)
         if aoi is None or aoi.empty:
-            print("Dataset %s: empty AOI after loading, skipping", dataset_id)
+            print(f"Dataset {dataset_id}: empty AOI after loading, skipping.")
             continue
 
         slug = dataset_id.replace("-", "_").replace(" ", "_")
-        out_root = resolve_out_root(config, dataset_id, base_dir)
-        out_root.mkdir(parents=True, exist_ok=True)
-
-        datasets.append({"id": dataset_id, "slug": slug, "aoi": aoi, "out_root": out_root})
+        datasets.append({"id": dataset_id, "slug": slug, "aoi": aoi})
 
     return datasets
 
-def read_json(config, aoi_path: Path) -> List[Dict]:
-    aoi = load_aoi(
-        aoi_path,
-        crs_out=config.aoi.crs_out,
-        buffer_meters=config.aoi.buffer_meters,
-        dissolve=True,
-    )
-    slug     = aoi_path.parent.parent.name.replace("-", "_").replace(" ", "_")
-    out_root = aoi_path.parent.parent / "vector"
-    out_root.mkdir(parents=True, exist_ok=True)
-    dataset_id = aoi_path.parent.parent.name
-    return [{"id": dataset_id, "slug": slug, "aoi": aoi, "out_root": out_root}]
 
-def load_and_dissolve_aois(config, paths: List[Path], dataset_id: str) -> Optional[gpd.GeoDataFrame]:
+def _load_aoi_from_file(config, aoi_path: Path) -> List[Dict]:
+    aoi_cfg    = config.aoi
+    aoi        = load_aoi(aoi_path, crs_out=aoi_cfg.crs_out,
+                          buffer_meters=aoi_cfg.buffer_meters, dissolve=True)
+    dataset_id = aoi_path.parent.parent.name
+    slug       = dataset_id.replace("-", "_").replace(" ", "_")
+    return [{"id": dataset_id, "slug": slug, "aoi": aoi}]
+
+
+def _load_and_dissolve_aois(
+    paths: List[Path],
+    dataset_id: str,
+    crs_out: str = "EPSG:4326",
+    buffer_meters: float = 0.0,
+) -> Optional[gpd.GeoDataFrame]:
     parts = []
     for p in paths:
         try:
-            gdf = load_aoi(p, crs_out=config.aoi.crs_out,
-                   buffer_meters=config.aoi.buffer_meters,
-            )
-            parts.append(gdf)
-        except Exception:
-            print("Dataset %s: failed to load AOI %s", dataset_id, p)
+            parts.append(load_aoi(p, crs_out=crs_out, buffer_meters=buffer_meters))
+        except Exception as exc:
+            print(f"Dataset {dataset_id}: failed to load AOI {p}: {exc}")
 
     if not parts:
         return None
 
-    combined = gpd.GeoDataFrame(
-        pd.concat(parts, ignore_index=True),
-        crs=parts[0].crs,
-    )
+    combined = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=parts[0].crs)
     return combined.dissolve().reset_index(drop=True) if len(combined) > 1 else combined
 
 def get_projected_crs(gdf: gpd.GeoDataFrame) -> str:
@@ -518,3 +551,75 @@ def get_projected_crs(gdf: gpd.GeoDataFrame) -> str:
         return f"EPSG:{32600 + zone_number}"
     else:
         return f"EPSG:{32700 + zone_number}"
+
+def init_earth_engine(project: str = "") -> None:
+    import ee  # optional dependency: pip install earthengine-api
+    kwargs = {"project": project} if project else {}
+    try:
+        ee.Initialize(**kwargs)
+        print("Earth Engine initialised.")
+    except Exception:
+        print("EE not initialised – authenticating …")
+        ee.Authenticate()
+        ee.Initialize(**kwargs)
+
+def _shapely_to_geojson_dict(geom) -> dict:
+    return json.loads(
+        gpd.GeoSeries([geom], crs="EPSG:4326").to_json()
+    )["features"][0]["geometry"]
+
+def aoi_gdf_to_ee_geometry(gdf):
+    import ee  # optional dependency: pip install earthengine-api
+    return ee.Geometry(_shapely_to_geojson_dict(gdf.union_all()))
+
+
+def download_file(url: str, out_path: Path, chunk_size: int = 1024 * 1024) -> None:
+    """Stream-download a file, skipping if it already exists."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists():
+        return
+    logging.getLogger(__name__).info("Downloading %s …", url)
+    with requests.get(url, stream=True, timeout=300) as r:
+        r.raise_for_status()
+        with open(out_path, "wb") as fh:
+            for chunk in r.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    fh.write(chunk)
+    logging.getLogger(__name__).info("Saved: %s", out_path)
+
+
+def get_tile_url_col(columns) -> str:
+    """Detect the URL/COG column in a tile index (e.g. TEMPO tile index)."""
+    if "data" in columns:
+        return "data"
+    candidates = [c for c in columns if any(k in c.lower() for k in ("url", "href", "path", "link"))]
+    if candidates:
+        return candidates[0]
+    raise ValueError(
+        f"Cannot find a URL column in tile index. Columns present: {list(columns)}"
+    )
+
+
+def reproject_to_4326(src_path: Path, dst_path: Path) -> None:
+    """Reproject a raster to EPSG:4326 and write to dst_path."""
+    with rasterio.open(src_path) as reader:
+        if reader.crs and reader.crs.to_epsg() == 4326:
+            shutil.copy2(src_path, dst_path)
+            return
+        transform, width, height = calculate_default_transform(
+            reader.crs, "EPSG:4326", reader.width, reader.height, *reader.bounds
+        )
+        meta = reader.meta.copy()
+        meta.update(crs="EPSG:4326", transform=transform,
+                    width=width, height=height, driver="GTiff")
+        with rasterio.open(dst_path, "w", **meta) as writer:
+            for i in range(1, reader.count + 1):
+                reproject(
+                    source=rasterio.band(reader, i),
+                    destination=rasterio.band(writer, i),
+                    src_transform=reader.transform,
+                    src_crs=reader.crs,
+                    dst_transform=transform,
+                    dst_crs="EPSG:4326",
+                    resampling=Resampling.bilinear,
+                )
