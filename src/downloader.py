@@ -18,6 +18,7 @@ from typing import Dict, List
 
 import duckdb
 import geopandas as gpd
+import pandas as pd
 import requests
 from shapely import wkb
 from shapely.geometry import mapping
@@ -193,17 +194,47 @@ class UrbanDownloader:
         return outputs
 
     def _run_globfp(self, con, ds: dict, out_root: Path, world_grid: Path) -> List[str]:
+        final_path = out_root / f"{ds['slug']}_globfp.parquet"
+        if final_path.exists() and not self.overwrite:
+            log.debug("Skip existing: %s", final_path)
+            return [str(final_path)]
+
         aoi_union = ds["aoi"].union_all()
-        outputs   = []
-        for grid_id in get_grid_ids_for_geometry(world_grid, aoi_union):
-            out_path = out_root / f"{ds['slug']}_globfp.parquet"
+        grid_ids  = get_grid_ids_for_geometry(world_grid, aoi_union)
+        log.info("GloBFP | %s | %d grid tile(s) intersect AOI.", ds["id"], len(grid_ids))
+
+        # Download each intersecting grid tile to its own temp file
+        per_grid_paths: List[Path] = []
+        for grid_id in grid_ids:
+            tmp_path = out_root / f"{ds['slug']}_globfp_grid{grid_id}.parquet"
             try:
                 shp = download_globfp_grid_tile(self.config, grid_id)
-                outputs += self._extract(con, ds["aoi"], out_path, shp_path=shp)
-                log.info("GloBFP OK | %s | grid=%d -> %s", ds["id"], grid_id, out_path)
+                self._extract(con, ds["aoi"], tmp_path, shp_path=shp)
+                per_grid_paths.append(tmp_path)
+                log.info("GloBFP OK | %s | grid=%d -> %s", ds["id"], grid_id, tmp_path.name)
             except Exception:
                 log.exception("GloBFP failed | %s | grid=%d", ds["id"], grid_id)
-        return outputs
+
+        if not per_grid_paths:
+            log.warning("GloBFP | %s | no tiles downloaded successfully.", ds["id"])
+            return []
+
+        if len(per_grid_paths) == 1:
+            # Single grid: rename temp file to final name
+            per_grid_paths[0].replace(final_path)
+        else:
+            # Multiple grids: merge into one file, then remove temp files
+            log.info("GloBFP | %s | merging %d grid tiles.", ds["id"], len(per_grid_paths))
+            merged = gpd.GeoDataFrame(
+                pd.concat([gpd.read_parquet(p) for p in per_grid_paths], ignore_index=True),
+                crs="EPSG:4326",
+            )
+            merged.to_parquet(final_path, index=False)
+            for p in per_grid_paths:
+                p.unlink(missing_ok=True)
+            log.info("GloBFP | %s | merged -> %s (%d buildings)", ds["id"], final_path.name, len(merged))
+
+        return [str(final_path)]
 
     def _extract(
         self,
