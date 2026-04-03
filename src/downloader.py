@@ -44,6 +44,9 @@ from src.utils import (
     download_file,
     get_tile_url_col,
     reproject_to_4326,
+    # NEW imports for multi-AOI support
+    tag_buildings_with_sub_aoi,
+    mask_raster_to_sub_aois,
 )
 
 logging.basicConfig(
@@ -71,6 +74,10 @@ class UrbanDownloader:
         self.overwrite = self.config.output.overwrite
         self.datasets  = load_all_aois(self.config)
         log.info("Loaded %d dataset(s) from inventory.", len(self.datasets))
+
+    # ─────────────────────────────────────────────────────────────────
+    #  VECTOR
+    # ─────────────────────────────────────────────────────────────────
 
     def download_vector(self) -> Dict[str, List[str]]:
         """Download Overture, GBA, and GloBFP footprints for all datasets."""
@@ -108,6 +115,10 @@ class UrbanDownloader:
 
         log.info("Vector download complete | total=%d", sum(len(v) for v in all_outputs.values()))
         return all_outputs
+
+    # ─────────────────────────────────────────────────────────────────
+    #  RASTER
+    # ─────────────────────────────────────────────────────────────────
 
     def download_raster(self) -> Dict[str, List[str]]:
         """Download Google OBT, Microsoft TEMPO, and GHSL rasters for all datasets."""
@@ -153,6 +164,10 @@ class UrbanDownloader:
         log.info("Raster download complete | total=%d", sum(len(v) for v in all_outputs.values()))
         return all_outputs
 
+    # ─────────────────────────────────────────────────────────────────
+    #  INTERNALS — DB connection
+    # ─────────────────────────────────────────────────────────────────
+
     def _connect_db(self) -> duckdb.DuckDBPyConnection:
         con = duckdb.connect()
         con.execute("INSTALL spatial; LOAD spatial;")
@@ -176,12 +191,19 @@ class UrbanDownloader:
             release = j["latest"]
         return f"{self.config.overture.s3_url}{release}".rstrip("/")
 
+    # ─────────────────────────────────────────────────────────────────
+    #  INTERNALS — Vector runners
+    # ─────────────────────────────────────────────────────────────────
+
     def _run_gba(self, con, ds: dict, out_root: Path) -> List[str]:
         glob = str(self.config.gba.s3_url).rstrip("/")
         if "*" not in glob:
             glob += "/*.parquet"
         out_path = out_root / f"{ds['slug']}_gba.parquet"
-        return self._extract(con, ds["aoi"], out_path, parquet_glob=glob)
+        results = self._extract(con, ds["aoi"], out_path, parquet_glob=glob)
+        # Post-process: tag with sub-AOI membership
+        self._tag_vector_output(out_path, ds)
+        return results
 
     def _run_overture(self, con, ds: dict, out_root: Path, base: str) -> List[str]:
         theme   = self.config.overture.theme
@@ -189,8 +211,11 @@ class UrbanDownloader:
         outputs = []
         for typ in types:
             out_path = out_root / f"{ds['slug']}_overture_{typ}.parquet"
-            outputs += self._extract(con, ds["aoi"], out_path,
+            results = self._extract(con, ds["aoi"], out_path,
                                      base_path=base, theme=theme, typ=typ)
+            # Post-process: tag with sub-AOI membership
+            self._tag_vector_output(out_path, ds)
+            outputs += results
         return outputs
 
     def _run_globfp(self, con, ds: dict, out_root: Path, world_grid: Path) -> List[str]:
@@ -203,7 +228,6 @@ class UrbanDownloader:
         grid_ids  = get_grid_ids_for_geometry(world_grid, aoi_union)
         log.info("GloBFP | %s | %d grid tile(s) intersect AOI.", ds["id"], len(grid_ids))
 
-        # Download each intersecting grid tile to its own temp file
         per_grid_paths: List[Path] = []
         for grid_id in grid_ids:
             tmp_path = out_root / f"{ds['slug']}_globfp_grid{grid_id}.parquet"
@@ -220,10 +244,8 @@ class UrbanDownloader:
             return []
 
         if len(per_grid_paths) == 1:
-            # Single grid: rename temp file to final name
             per_grid_paths[0].replace(final_path)
         else:
-            # Multiple grids: merge into one file, then remove temp files
             log.info("GloBFP | %s | merging %d grid tiles.", ds["id"], len(per_grid_paths))
             merged = gpd.GeoDataFrame(
                 pd.concat([gpd.read_parquet(p) for p in per_grid_paths], ignore_index=True),
@@ -234,7 +256,55 @@ class UrbanDownloader:
                 p.unlink(missing_ok=True)
             log.info("GloBFP | %s | merged -> %s (%d buildings)", ds["id"], final_path.name, len(merged))
 
+        # Post-process: tag with sub-AOI membership
+        self._tag_vector_output(final_path, ds)
         return [str(final_path)]
+
+    # ─────────────────────────────────────────────────────────────────
+    #  NEW: Post-processing step for vector outputs
+    # ─────────────────────────────────────────────────────────────────
+
+    def _tag_vector_output(self, parquet_path: Path, ds: dict) -> None:
+        """Tag buildings in a parquet file with sub_aoi_id and drop gap buildings.
+
+        For single-AOI datasets this simply adds the sub_aoi_id column.
+        For multi-AOI datasets this performs a spatial join against the
+        individual sub-AOI polygons, drops buildings in gaps, and overwrites
+        the parquet file.
+        """
+        if not parquet_path.exists():
+            return
+
+        sub_aois = ds.get("sub_aois", [])
+        if not sub_aois:
+            return
+
+        try:
+            gdf = gpd.read_parquet(parquet_path)
+        except Exception:
+            log.warning("Could not read %s for sub-AOI tagging.", parquet_path)
+            return
+
+        if gdf.empty:
+            return
+
+        n_before = len(gdf)
+        gdf = tag_buildings_with_sub_aoi(gdf, sub_aois)
+        n_after = len(gdf)
+
+        if ds.get("is_multi_aoi") and n_before != n_after:
+            log.info(
+                "Sub-AOI tagging | %s | %s | %d -> %d buildings "
+                "(%d in gaps removed)",
+                ds["id"], parquet_path.name,
+                n_before, n_after, n_before - n_after,
+            )
+
+        gdf.to_parquet(parquet_path, index=False)
+
+    # ─────────────────────────────────────────────────────────────────
+    #  INTERNALS — Spatial extract (unchanged logic)
+    # ─────────────────────────────────────────────────────────────────
 
     def _extract(
         self,
@@ -250,9 +320,6 @@ class UrbanDownloader:
     ) -> List[str]:
         """
         Spatially query a source dataset clipped to the AOI and write a parquet file.
-
-        Exactly one of shp_path, parquet_glob, or base_path must be provided.
-        Returns a list containing the output path on success.
         """
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -260,7 +327,6 @@ class UrbanDownloader:
             log.debug("Skip existing: %s", out_path)
             return [str(out_path)]
 
-        # Build the DuckDB source expression and bounding-box pre-filter
         if shp_path is not None:
             source     = f"ST_Read('{shp_path}')"
             geom_col   = "geom"
@@ -277,14 +343,12 @@ class UrbanDownloader:
                 " AND b.bbox.ymin <= {maxy} AND b.bbox.ymax >= {miny}"
             )
 
-        # Use the dissolved union of the AOI for the spatial filter
         aoi_geom = aoi_gdf.union_all()
         minx, miny, maxx, maxy = aoi_geom.bounds
         aoi_json = json.dumps(mapping(aoi_geom)).replace("'", "''")
         bbox     = bbox_where.format(minx=minx, miny=miny, maxx=maxx, maxy=maxy)
 
         if shp_path is not None:
-            # Shapefile-backed source: read into Python, convert WKB -> geometry, write parquet
             sql = f"""
                 WITH aoi AS (SELECT ST_GeomFromGeoJSON('{aoi_json}') AS geom)
                 SELECT * EXCLUDE ({geom_col}), ST_AsWKB(b.{geom_col}) AS geometry
@@ -300,7 +364,6 @@ class UrbanDownloader:
                 out_path, index=False
             )
         else:
-            # Parquet-backed source: let DuckDB write directly to parquet (faster)
             sql = f"""
                 COPY (
                     WITH aoi AS (SELECT ST_GeomFromGeoJSON('{aoi_json}') AS geom)
@@ -314,9 +377,28 @@ class UrbanDownloader:
         log.info("Wrote: %s", out_path)
         return [str(out_path)]
 
+    # ─────────────────────────────────────────────────────────────────
+    #  INTERNALS — Raster runners  (REVISED: mask after download)
+    # ─────────────────────────────────────────────────────────────────
+
+    def _mask_if_multi_aoi(self, raster_path: Path, ds: dict, nodata: float = 0.0) -> None:
+        """Apply sub-AOI mask to a raster if this is a multi-AOI dataset."""
+        if not ds.get("is_multi_aoi"):
+            return
+        if not Path(raster_path).exists():
+            return
+        sub_aois = ds.get("sub_aois", [])
+        if not sub_aois:
+            return
+        log.info("Masking raster to %d sub-AOI(s) | %s | %s",
+                 len(sub_aois), ds["id"], raster_path)
+        mask_raster_to_sub_aois(
+            Path(raster_path), sub_aois,
+            nodata=nodata, in_place=True,
+        )
+
     def _run_obt(self, ds: dict, out_root: Path, cfg) -> List[str]:
         """Download yearly rasters from Google Open Buildings Temporal."""
-
         aoi_ee     = aoi_gdf_to_ee_geometry(ds["aoi"])
         collection = ee.ImageCollection(cfg.ee_collection_id)
         outputs    = []
@@ -341,6 +423,10 @@ class UrbanDownloader:
                 region=aoi_ee, scale=cfg.scale, crs="EPSG:4326",
             )
             log.info("[OBT] %s %d — saved %s", ds["id"], year, out_path)
+
+            # NEW: mask to sub-AOIs for multi-AOI datasets
+            self._mask_if_multi_aoi(out_path, ds)
+
             outputs.append(str(out_path))
 
         return outputs
@@ -355,7 +441,6 @@ class UrbanDownloader:
 
         aoi_union = ds["aoi"].union_all()
 
-        # Load tile index (download once, cached)
         tile_index_cache = Path(cfg.tile_index_cache)
         download_file(cfg.tile_index_url, tile_index_cache)
         tile_index = gpd.read_file(tile_index_cache).to_crs(TARGET_CRS)
@@ -391,7 +476,6 @@ class UrbanDownloader:
             log.info("[TEMPO] %s — mosaic exists, skipping.", ds["id"])
             return [str(mosaic_path)]
 
-        # Merge reprojected tiles
         readers = [rasterio.open(fp) for fp in reproj_files]
         mosaic, transform = rio_merge(readers)
         meta = readers[0].meta.copy()
@@ -404,11 +488,20 @@ class UrbanDownloader:
         with rasterio.open(temp, "w", **meta) as writer:
             writer.write(mosaic)
 
-        # Clip mosaic to AOI
+        # ── REVISED: Use sub-AOI geometries for clipping (not just dissolved) ──
+        # For multi-AOI datasets, clip to the individual sub-AOI polygons
+        # so gaps between scattered sub-AOIs become nodata.
+        # For single-AOI datasets, this behaves the same as before.
+        sub_aois = ds.get("sub_aois", [])
+        if ds.get("is_multi_aoi") and sub_aois:
+            clip_shapes = [mapping(s["geometry"]) for s in sub_aois]
+        else:
+            clip_shapes = [_shapely_to_geojson_dict(aoi_union)]
+
         try:
             with rasterio.open(temp) as reader:
                 clipped, tf = rio_mask(
-                    reader, [_shapely_to_geojson_dict(aoi_union)], crop=True, all_touched=True
+                    reader, clip_shapes, crop=True, all_touched=True
                 )
                 clipped_meta = reader.meta.copy()
                 clipped_meta.update(crs=TARGET_CRS, height=clipped.shape[1],
@@ -436,11 +529,10 @@ class UrbanDownloader:
                     outputs.append(str(out_path))
                     continue
 
-                # Each year is a separate Image: <collection_id>/<year>
                 image_id = f"{prod.ee_id}/{year}"
                 try:
                     image = ee.Image(image_id).select(prod.band).clip(aoi_ee)
-                    image.bandNames().getInfo()  # lightweight existence check
+                    image.bandNames().getInfo()
                 except Exception as exc:
                     log.error("[GHSL/%s] %s %d — cannot load '%s': %s",
                               product_name, ds["id"], year, image_id, exc)
@@ -452,10 +544,13 @@ class UrbanDownloader:
                         region=aoi_ee, scale=prod.scale, crs="EPSG:4326",
                     )
                     log.info("[GHSL/%s] %s %d — saved %s", product_name, ds["id"], year, out_path)
+
+                    # NEW: mask to sub-AOIs for multi-AOI datasets
+                    self._mask_if_multi_aoi(out_path, ds)
+
                     outputs.append(str(out_path))
                 except Exception as exc:
                     log.error("[GHSL/%s] %s %d — download failed: %s",
                               product_name, ds["id"], year, exc, exc_info=True)
 
         return outputs
-

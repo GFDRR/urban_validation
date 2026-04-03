@@ -17,10 +17,11 @@ import shutil
 import geopandas as gpd
 import pandas as pd
 import rasterio
+from rasterio.mask import mask as rio_mask
 from rasterio.warp import calculate_default_transform, reproject, Resampling
-from shapely.geometry import box
+from shapely.geometry import box, mapping
 import numpy as np
-from src.preprocess import validate_aoi_geometry
+from shapely import make_valid as _make_valid
 import pyproj
 
 FIGSHARE_API = "https://api.figshare.com/v2"
@@ -39,6 +40,9 @@ GLOBFP_PARTS: List[Tuple[int, int, int]] = [
 
 # rows per chunk when computing UTM areas
 _AREA_CHUNK_SIZE = int(os.environ.get("AREA_CHUNK_SIZE", 50_000))
+
+log = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class FigshareFile:
@@ -194,6 +198,41 @@ def _read_gdf(path: Union[str, Path]) -> gpd.GeoDataFrame:
         return gpd.read_parquet(path)
     return gpd.read_file(path)
 
+def validate_aoi_geometry(gdf: gpd.GeoDataFrame, label: str = "") -> gpd.GeoDataFrame:
+    """
+    Fix invalid geometries (self-intersections, rings, etc.) and drop empty geometries.
+    Uses shapely.make_valid when available; falls back to buffer(0).
+    """
+    gdf = gdf.copy()
+
+    # Drop missing/empty early
+    gdf = gdf[~gdf.geometry.isna()].copy()
+    gdf = gdf[~gdf.geometry.is_empty].copy()
+
+    invalid = ~gdf.geometry.is_valid
+    n_invalid = int(invalid.sum())
+
+    if n_invalid == 0:
+        return gdf
+
+    print(f"[{label}] fixing {n_invalid} invalid geometries...")
+
+    try:
+        gdf.loc[invalid, "geometry"] = gdf.loc[invalid, "geometry"].apply(_make_valid)
+    except Exception:
+        # Fallback (less robust, but often works)
+        gdf.loc[invalid, "geometry"] = gdf.loc[invalid, "geometry"].buffer(0)
+
+    # Drop anything that became empty after fixing
+    gdf = gdf[~gdf.geometry.isna()].copy()
+    gdf = gdf[~gdf.geometry.is_empty].copy()
+
+    still_invalid = int((~gdf.geometry.is_valid).sum())
+    if still_invalid:
+        print(f"[{label}] warning: {still_invalid} geometries are still invalid after fixing.")
+
+    return gdf
+
 
 def load_buildings(
     path: Union[str, Path],
@@ -206,21 +245,6 @@ def load_buildings(
 ) -> gpd.GeoDataFrame:
     """
     Load building footprints, reproject, compute area, filter by min area.
-
-    Changes vs. original
-    --------------------
-    1.  Null / empty geometries are dropped BEFORE any CRS operation,
-        preventing ``estimate_utm_crs`` from crashing on NaN bounds
-        (the GloBFP / globfp parquet bug).
-
-    2.  ``compute_area_mode`` default changed from ``"utm"`` to ``"auto"``:
-        - If ``crs_work`` is already projected (metres), areas are computed
-          directly — no chunked reproject needed, much faster.
-        - If ``crs_work`` is geographic (degrees), falls back to the
-          chunked-UTM approach.
-
-    3.  The chunked-UTM path now also drops null geometries before calling
-        ``estimate_utm_crs``, as a safety net.
     """
     path = Path(path)
     gdf = (gpd.read_parquet(path) if path.suffix.lower() in {".parquet", ".geoparquet"}
@@ -229,7 +253,6 @@ def load_buildings(
     if gdf.crs is None:
         raise ValueError(f"{path} has no CRS defined.")
 
-    # ── FIX 1: drop null / empty geometries BEFORE any reprojection ──────────
     n_before = len(gdf)
     gdf = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty].copy()
     n_dropped = n_before - len(gdf)
@@ -250,9 +273,7 @@ def load_buildings(
     if fix_invalid_geoms:
         gdf = validate_aoi_geometry(gdf, label=path.name)
 
-    # ── FIX 2: decide area computation strategy based on crs_work ────────────
     if compute_area_mode == "auto":
-        # If crs_work is projected (units = metres), compute area directly
         crs_obj = pyproj.CRS(crs_work)
         if crs_obj.is_projected:
             compute_area_mode = "work_crs"
@@ -260,12 +281,9 @@ def load_buildings(
             compute_area_mode = "utm"
 
     if compute_area_mode == "work_crs":
-        # crs_work is already in metres — just use .area directly
         gdf["area_m2"] = gdf.geometry.area
 
     elif compute_area_mode == "utm":
-        # crs_work is geographic — need to reproject to UTM in chunks
-        # Safety: drop any remaining null geometries before estimate_utm_crs
         valid_mask = gdf.geometry.notna() & ~gdf.geometry.is_empty
         if not valid_mask.all():
             gdf = gdf[valid_mask].copy()
@@ -321,7 +339,7 @@ def load_aoi(
         if not aoi.crs.is_projected:
             if logger:
                 logger.warning("AOI CRS is geographic; reprojecting to EPSG:3857 for buffering")
-            aoi_metric = aoi.to_crs("EPSG:3857") # TODO: this should not be harcoded — ideally we would use a local UTM zone
+            aoi_metric = aoi.to_crs("EPSG:3857")
             aoi_metric["geometry"] = aoi_metric.geometry.buffer(buffer_meters)
             aoi = aoi_metric.to_crs(aoi.crs)
         else:
@@ -391,13 +409,7 @@ def subset_by_tile(buildings: gpd.GeoDataFrame,
     return subset
 
 def resolve_out_root(config, dataset_id: str, subdir: str = "vector") -> Path:
-    """Resolve the output directory for a dataset.
-
-    If output.use_base_dir_for_output is true (default):
-        <aoi.base_dir>/<dataset_id>/<subdir>/
-    Otherwise:
-        <output.root_dir>/<dataset_id>/<subdir>/
-    """
+    """Resolve the output directory for a dataset."""
     use_base = config.output.use_base_dir_for_output
     if use_base:
         p = Path(config.aoi.base_dir) / dataset_id / subdir
@@ -407,18 +419,45 @@ def resolve_out_root(config, dataset_id: str, subdir: str = "vector") -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p
 
-
 def load_all_aois(config) -> List[Dict]:
     """Parse the AOI inventory and return a list of dataset dicts.
 
-    Returns list of {"id": str, "slug": str, "aoi": GeoDataFrame}.
-    Output directories are NOT included — callers resolve those per download type.
+    Returns list of:
+        {
+            "id":        str,
+            "slug":      str,
+            "aoi":       GeoDataFrame,          # dissolved union (as before)
+            "sub_aois":  list[dict],             # NEW — per-file sub-AOI info
+            "is_multi_aoi": bool,                # NEW — convenience flag
+        }
+
+    Each entry in sub_aois is:
+        {
+            "sub_aoi_id": str,                   # e.g. "accra_17589"
+            "file_name":  str,                   # original filename
+            "geometry":   shapely.geometry.Base,  # individual sub-AOI geometry (EPSG:4326)
+        }
+
+    For single-AOI datasets, sub_aois has one entry and is_multi_aoi is False.
     """
     aoi_path = Path(config.aoi.path)
     if aoi_path.suffix.lower() == ".csv":
         return _load_aois_from_csv(config)
     else:
         return _load_aoi_from_file(config, aoi_path)
+
+
+def _extract_sub_aoi_id(filename: str) -> str:
+    """Derive a sub-AOI identifier from the AOI filename.
+
+    Examples:
+        "accra_17589_aoi.geojson"  -> "accra_17589"
+        "rohingya_3939_aoi.geojson" -> "rohingya_3939"
+        "curacao_aoi.geojson"       -> "curacao"
+    """
+    stem = Path(filename).stem                    # "accra_17589_aoi"
+    stem = re.sub(r"_aoi$", "", stem, flags=re.I) # "accra_17589"
+    return stem
 
 
 def _load_aois_from_csv(config) -> List[Dict]:
@@ -454,27 +493,59 @@ def _load_aois_from_csv(config) -> List[Dict]:
         dataset_id = str(dataset_id)
 
         # Collect AOI paths — supports pipe-separated values and multiple rows
-        aoi_paths: List[Path] = []
+        aoi_entries: List[Tuple[str, Path]] = []   # (filename, full_path)
         for _, row in group.iterrows():
             for part in str(row["aoi_file_name"]).split("|"):
                 part = part.strip()
                 if part:
-                    aoi_paths.append(base_dir / dataset_id / aoi_cfg.aoi_subdir / part)
+                    full_path = base_dir / dataset_id / aoi_cfg.aoi_subdir / part
+                    aoi_entries.append((part, full_path))
 
-        existing = [p for p in aoi_paths if p.exists()]
+        existing = [(fname, p) for fname, p in aoi_entries if p.exists()]
         if not existing:
             print(f"Dataset {dataset_id}: no AOI files found on disk, skipping.")
             continue
 
-        aoi = _load_and_dissolve_aois(existing, dataset_id,
-                                       crs_out=crs_out,
-                                       buffer_meters=aoi_cfg.buffer_meters)
-        if aoi is None or aoi.empty:
+        # ── Load each sub-AOI individually ──────────────────────────
+        sub_aois: List[Dict] = []
+        parts_gdf: List[gpd.GeoDataFrame] = []
+        for fname, p in existing:
+            try:
+                gdf_part = load_aoi(p, crs_out=crs_out,
+                                    buffer_meters=aoi_cfg.buffer_meters)
+                parts_gdf.append(gdf_part)
+                # Store individual sub-AOI geometry (dissolved per file)
+                sub_geom = gdf_part.union_all()
+                sub_aois.append({
+                    "sub_aoi_id": _extract_sub_aoi_id(fname),
+                    "file_name":  fname,
+                    "geometry":   sub_geom,
+                })
+            except Exception as exc:
+                print(f"Dataset {dataset_id}: failed to load AOI {p}: {exc}")
+
+        if not parts_gdf:
             print(f"Dataset {dataset_id}: empty AOI after loading, skipping.")
             continue
 
+        # Build the dissolved union (existing behaviour)
+        combined = gpd.GeoDataFrame(
+            pd.concat(parts_gdf, ignore_index=True), crs=parts_gdf[0].crs
+        )
+        aoi = combined.dissolve().reset_index(drop=True) if len(combined) > 1 else combined
+
+        if aoi.empty:
+            print(f"Dataset {dataset_id}: empty AOI after dissolve, skipping.")
+            continue
+
         slug = dataset_id.replace("-", "_").replace(" ", "_")
-        datasets.append({"id": dataset_id, "slug": slug, "aoi": aoi})
+        datasets.append({
+            "id":           dataset_id,
+            "slug":         slug,
+            "aoi":          aoi,
+            "sub_aois":     sub_aois,
+            "is_multi_aoi": len(sub_aois) > 1,
+        })
 
     return datasets
 
@@ -485,75 +556,178 @@ def _load_aoi_from_file(config, aoi_path: Path) -> List[Dict]:
                           buffer_meters=aoi_cfg.buffer_meters, dissolve=True)
     dataset_id = aoi_path.parent.parent.name
     slug       = dataset_id.replace("-", "_").replace(" ", "_")
-    return [{"id": dataset_id, "slug": slug, "aoi": aoi}]
+
+    sub_geom = aoi.union_all()
+    return [{
+        "id":           dataset_id,
+        "slug":         slug,
+        "aoi":          aoi,
+        "sub_aois":     [{
+            "sub_aoi_id": _extract_sub_aoi_id(aoi_path.name),
+            "file_name":  aoi_path.name,
+            "geometry":   sub_geom,
+        }],
+        "is_multi_aoi": False,
+    }]
 
 
-def _load_and_dissolve_aois(
-    paths: List[Path],
-    dataset_id: str,
-    crs_out: str = "EPSG:4326",
-    buffer_meters: float = 0.0,
-) -> Optional[gpd.GeoDataFrame]:
-    parts = []
-    for p in paths:
-        try:
-            parts.append(load_aoi(p, crs_out=crs_out, buffer_meters=buffer_meters))
-        except Exception as exc:
-            print(f"Dataset {dataset_id}: failed to load AOI {p}: {exc}")
+# ─────────────────────────────────────────────────────────────────────
+#  NEW: tag buildings with their sub-AOI membership
+# ─────────────────────────────────────────────────────────────────────
 
-    if not parts:
-        return None
+def build_sub_aoi_gdf(sub_aois: List[Dict], crs: str = "EPSG:4326") -> gpd.GeoDataFrame:
+    """Build a GeoDataFrame from the sub_aois list for spatial joins."""
+    return gpd.GeoDataFrame(
+        [{"sub_aoi_id": s["sub_aoi_id"], "geometry": s["geometry"]}
+         for s in sub_aois],
+        crs=crs,
+    )
 
-    combined = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=parts[0].crs)
-    return combined.dissolve().reset_index(drop=True) if len(combined) > 1 else combined
 
-def get_projected_crs(gdf: gpd.GeoDataFrame) -> str:
+def tag_buildings_with_sub_aoi(
+    buildings: gpd.GeoDataFrame,
+    sub_aois: List[Dict],
+    *,
+    crs: str = "EPSG:4326",
+) -> gpd.GeoDataFrame:
+    """Spatial-join buildings with sub-AOI polygons to add a `sub_aoi_id` column.
+
+    Buildings that don't fall within any sub-AOI are dropped (these are artefacts
+    from the dissolved-union bounding-box query that fall in the gaps).
+
+    For single-AOI datasets this is a no-op identity (all buildings match).
     """
-    Return the best UTM EPSG code for the centroid of a GeoDataFrame.
+    if len(sub_aois) <= 1:
+        # Single AOI — just add the column directly
+        buildings = buildings.copy()
+        buildings["sub_aoi_id"] = sub_aois[0]["sub_aoi_id"] if sub_aois else ""
+        return buildings
+
+    sub_gdf = build_sub_aoi_gdf(sub_aois, crs=crs)
+
+    # Ensure both are in the same CRS
+    if str(buildings.crs) != crs:
+        bld = buildings.to_crs(crs)
+    else:
+        bld = buildings
+
+    joined = gpd.sjoin(
+        bld,
+        sub_gdf[["sub_aoi_id", "geometry"]],
+        how="inner",
+        predicate="intersects",
+    )
+
+    # Drop the sjoin index column and deduplicate (a building on the border
+    # of two sub-AOIs will appear twice — keep first match)
+    joined = joined.drop(columns=["index_right"], errors="ignore")
+    joined = joined[~joined.index.duplicated(keep="first")]
+
+    # Restore original CRS if we reprojected
+    if str(buildings.crs) != crs:
+        joined = joined.to_crs(buildings.crs)
+
+    log.info(
+        "Tagged buildings: %d total, %d matched sub-AOIs, %d dropped (in gaps)",
+        len(buildings), len(joined), len(buildings) - len(joined),
+    )
+    return joined.reset_index(drop=True)
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  NEW: mask raster to sub-AOI geometries
+# ─────────────────────────────────────────────────────────────────────
+
+def get_sub_aoi_geojson_geometries(sub_aois: List[Dict]) -> List[dict]:
+    """Convert sub-AOI geometries to GeoJSON dicts for rasterio masking."""
+    return [mapping(s["geometry"]) for s in sub_aois]
+
+
+def mask_raster_to_sub_aois(
+    raster_path: Path,
+    sub_aois: List[Dict],
+    *,
+    nodata: float = 0.0,
+    all_touched: bool = True,
+    in_place: bool = True,
+) -> Path:
+    """Mask a raster so that only pixels within sub-AOI polygons are kept.
+
+    Pixels outside any sub-AOI polygon are set to `nodata`.
+    If in_place is True, the file is overwritten; otherwise a new file
+    with suffix '_masked' is written alongside the original.
 
     Parameters
     ----------
-    gdf : GeoDataFrame
-        Must be in EPSG:4326 (or any geographic CRS).
+    raster_path : Path
+        Path to the raster file (GeoTIFF).
+    sub_aois : list[dict]
+        The sub_aois list from the dataset dict.
+    nodata : float
+        The nodata value to assign to masked-out pixels.
+    all_touched : bool
+        If True, all pixels touched by sub-AOI boundaries are kept.
+    in_place : bool
+        If True, overwrite the original file. Otherwise write *_masked.tif.
 
     Returns
     -------
-    str
-        EPSG string like "EPSG:32637" (UTM zone 37N).
+    Path
+        Path to the (possibly new) masked raster.
     """
-    # make it is in lon/lat
+    geojson_geoms = get_sub_aoi_geojson_geometries(sub_aois)
+
+    with rasterio.open(raster_path) as src:
+        masked_data, masked_transform = rio_mask(
+            src,
+            geojson_geoms,
+            crop=False,          # keep original extent
+            all_touched=all_touched,
+            nodata=nodata,
+            filled=True,         # fill outside with nodata
+        )
+        meta = src.meta.copy()
+        meta.update(nodata=nodata)
+
+    if in_place:
+        out_path = raster_path
+    else:
+        out_path = raster_path.with_name(
+            raster_path.stem + "_masked" + raster_path.suffix
+        )
+
+    with rasterio.open(out_path, "w", **meta) as dst:
+        dst.write(masked_data)
+
+    log.info("Masked raster -> %s  (nodata=%s, %d sub-AOI polygons)",
+             out_path, nodata, len(sub_aois))
+    return out_path
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Unchanged utility functions
+# ─────────────────────────────────────────────────────────────────────
+
+def get_projected_crs(gdf: gpd.GeoDataFrame) -> str:
     if gdf.crs and not gdf.crs.is_geographic:
         gdf = gdf.to_crs(epsg=4326)
-
-    # get centroid of the union of all geometries
-    bounds = gdf.total_bounds  # (minx, miny, maxx, maxy)
+    bounds = gdf.total_bounds
     lon = (bounds[0] + bounds[2]) / 2
     lat = (bounds[1] + bounds[3]) / 2
-
-    # use pyproj to find the best UTM zone
     utm_crs_list = pyproj.database.query_utm_crs_info(
         datum_name="WGS 84",
         area_of_interest=pyproj.aoi.AreaOfInterest(
-            west_lon_degree=lon,
-            south_lat_degree=lat,
-            east_lon_degree=lon,
-            north_lat_degree=lat,
+            west_lon_degree=lon, south_lat_degree=lat,
+            east_lon_degree=lon, north_lat_degree=lat,
         ),
     )
-
     if utm_crs_list:
-        utm = utm_crs_list[0]
-        return f"EPSG:{utm.code}"
-
-    # fallback: calculate manually
+        return f"EPSG:{utm_crs_list[0].code}"
     zone_number = int((lon + 180) / 6) + 1
-    if lat >= 0:
-        return f"EPSG:{32600 + zone_number}"
-    else:
-        return f"EPSG:{32700 + zone_number}"
+    return f"EPSG:{32600 + zone_number}" if lat >= 0 else f"EPSG:{32700 + zone_number}"
 
 def init_earth_engine(project: str = "") -> None:
-    import ee  # optional dependency: pip install earthengine-api
+    import ee
     kwargs = {"project": project} if project else {}
     try:
         ee.Initialize(**kwargs)
@@ -569,12 +743,10 @@ def _shapely_to_geojson_dict(geom) -> dict:
     )["features"][0]["geometry"]
 
 def aoi_gdf_to_ee_geometry(gdf):
-    import ee  # optional dependency: pip install earthengine-api
+    import ee
     return ee.Geometry(_shapely_to_geojson_dict(gdf.union_all()))
 
-
 def download_file(url: str, out_path: Path, chunk_size: int = 1024 * 1024) -> None:
-    """Stream-download a file, skipping if it already exists."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists():
         return
@@ -587,21 +759,15 @@ def download_file(url: str, out_path: Path, chunk_size: int = 1024 * 1024) -> No
                     fh.write(chunk)
     logging.getLogger(__name__).info("Saved: %s", out_path)
 
-
 def get_tile_url_col(columns) -> str:
-    """Detect the URL/COG column in a tile index (e.g. TEMPO tile index)."""
     if "data" in columns:
         return "data"
     candidates = [c for c in columns if any(k in c.lower() for k in ("url", "href", "path", "link"))]
     if candidates:
         return candidates[0]
-    raise ValueError(
-        f"Cannot find a URL column in tile index. Columns present: {list(columns)}"
-    )
-
+    raise ValueError(f"Cannot find a URL column in tile index. Columns present: {list(columns)}")
 
 def reproject_to_4326(src_path: Path, dst_path: Path) -> None:
-    """Reproject a raster to EPSG:4326 and write to dst_path."""
     with rasterio.open(src_path) as reader:
         if reader.crs and reader.crs.to_epsg() == 4326:
             shutil.copy2(src_path, dst_path)
