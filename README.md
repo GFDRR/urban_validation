@@ -9,6 +9,17 @@ This repository contains a pipeline for downloading global satellite-derived bui
 
 The pipeline is config driven and rely on an `aoi_tracker` to identify the folders containing the `aoi` geojson and the `reference` data. 
 
+<div align="center">
+
+## Data availability 
+Our datasets and validation are provided for these AOIs: 
+
+</div>
+
+![AOIs with high quality references](outputs/sample_AOIs.png)
+
+Dataset would be provided publicly here: 
+
 ## Code organization
 
 | Module | Role |
@@ -81,17 +92,12 @@ Each raster dataset entry in `configs/validation_configs.yaml` specifies a `name
 See `notebooks/raster_validator.ipynb` for the Colab-ready notebook.
 
 ### Result visualization 
-
-
-## Data availability 
-Our datasets and validation are provided for these AOIs: 
-
-![AOIs with high quality references](outputs/sample_AOIs.png)
-
-Dataset would be provided publicly here: 
+[TODO]
 
 ### File Organization
 The datasets are organized as follows:
+[TODO]: when publicly available. 
+[TODO]: check Zenodo/ Source Coop for sharing benchmark datasets (geoparquet) 
 
 
 ## License 
@@ -101,10 +107,10 @@ This code repository and corresponding datasets are distributed under the MIT Li
 
 ```
 @misc{gfdrr2026,
-  title={Urban Validation},
+  title={An assessment of satellite derived global urban datasets for operational and analytical use},
   author={},
   year={2026},
-  organization={GFDRR},
+  organization={GFDRR, The World Bank Group},
   type={Dataset},
   howpublished={\url{https://github.com/GFDRR/urban_validation}}
 }
