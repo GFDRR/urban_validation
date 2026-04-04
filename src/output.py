@@ -1,4 +1,5 @@
 import datetime
+import gc
 import logging
 from pathlib import Path
 from typing import Optional
@@ -134,6 +135,32 @@ def tile_f1_box_plot(
     plt.close(fig)
 
 
+# def tile_f1_spatial_dist(
+#     tiles: gpd.GeoDataFrame,
+#     metrics_all: pd.DataFrame,
+#     figures_dir: Path,
+#     city: str,
+#     dpi: int = 200,
+#     fmt: str = "png",
+# ) -> None:
+#     """Choropleth map of per-tile F1, one figure per dataset."""
+#     for ds in metrics_all["dataset"].unique():
+#         metrics_ds = metrics_all[metrics_all["dataset"] == ds]
+#         if metrics_ds.empty:
+#             continue
+#         tiles_metrics = tiles.merge(metrics_ds[["tile_id", "f1"]], on="tile_id", how="left")
+#         fig, ax = plt.subplots(figsize=(8, 8))
+#         tiles_metrics.plot(
+#             column="f1", ax=ax, legend=True, cmap="viridis",
+#             vmin=0, vmax=1, edgecolor="none",
+#             legend_kwds={"label": "F1 score", "shrink": 0.6},
+#         )
+#         ax.set_title(f"{city} — Tile-level F1 — {ds}", fontsize=13, fontweight="bold")
+#         ax.set_axis_off()
+#         fig.tight_layout()
+#         save_figure(fig, figures_dir, fig_name(city, f"tile_f1_spatial_{ds}", fmt), dpi=dpi)
+#         plt.close(fig)
+
 def tile_f1_spatial_dist(
     tiles: gpd.GeoDataFrame,
     metrics_all: pd.DataFrame,
@@ -148,17 +175,32 @@ def tile_f1_spatial_dist(
         if metrics_ds.empty:
             continue
         tiles_metrics = tiles.merge(metrics_ds[["tile_id", "f1"]], on="tile_id", how="left")
+        del metrics_ds
+        # Reproject to WGS-84 for plotting. GeoPandas' default aspect="auto"
+        # uses cos(latitude°) on geographic CRS; if you plot projected metres
+        # without reprojecting (or CRS/geometry disagree), y is wrong and you get
+        # ValueError: aspect must be finite and positive.
+        tiles_plot = tiles_metrics.to_crs("EPSG:4326")
+        del tiles_metrics
+        bounds = tiles_plot.total_bounds
+        if not np.all(np.isfinite(bounds)):
+            del tiles_plot
+            continue
         fig, ax = plt.subplots(figsize=(8, 8))
-        tiles_metrics.plot(
+        tiles_plot.plot(
             column="f1", ax=ax, legend=True, cmap="viridis",
             vmin=0, vmax=1, edgecolor="none",
             legend_kwds={"label": "F1 score", "shrink": 0.6},
+            aspect="equal",
         )
+        del tiles_plot
         ax.set_title(f"{city} — Tile-level F1 — {ds}", fontsize=13, fontweight="bold")
         ax.set_axis_off()
         fig.tight_layout()
         save_figure(fig, figures_dir, fig_name(city, f"tile_f1_spatial_{ds}", fmt), dpi=dpi)
         plt.close(fig)
+        gc.collect()
+
 
 def plot_iou_dist(
     metrics_all: pd.DataFrame,
@@ -179,6 +221,7 @@ def plot_iou_dist(
         ious_all = pd.concat(
             [ious_tp, pd.Series(np.zeros(fp + fn))], ignore_index=True
         )
+        del ious_tp
 
         fig, ax = plt.subplots(figsize=(7, 4))
         ax.hist(ious_all, bins=30, color="steelblue", edgecolor="white", linewidth=0.4)
@@ -198,6 +241,7 @@ def plot_iou_dist(
         fig.tight_layout()
         save_figure(fig, figures_dir, fig_name(city, f"iou_dist_{ds}", fmt), dpi=dpi)
         plt.close(fig)
+        del ious_all
 
 
 def plot_iou_per_building_sizes(
@@ -233,6 +277,7 @@ def plot_iou_per_building_sizes(
             )
             .reset_index()
         )
+        del m_ds
         x = size_stats["size_bin"].astype(str).tolist()
 
         for col, colour, ylabel, stem in [
@@ -253,3 +298,4 @@ def plot_iou_per_building_sizes(
             fig.tight_layout()
             save_figure(fig, figures_dir, fig_name(city, stem, fmt), dpi=dpi)
             plt.close(fig)
+        del size_stats

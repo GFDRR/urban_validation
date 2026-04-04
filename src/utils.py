@@ -708,6 +708,118 @@ def mask_raster_to_sub_aois(
 #  Unchanged utility functions
 # ─────────────────────────────────────────────────────────────────────
 
+def load_validation_datasets(cfg: dict, data_dir: Path) -> List[Dict]:
+    """Read the AOI tracker CSV and return datasets ready for validation.
+
+    Mirrors the sub-AOI loading done for downloads so that multi-AOI datasets
+    (cities with several scattered AOI files) are handled consistently.
+
+    Each entry in the returned list:
+        {
+            "id":           str,            # dataset_folder_name from tracker
+            "slug":         str,            # id with hyphens/spaces -> underscores
+            "aoi":          GeoDataFrame,   # dissolved union of all sub-AOIs
+            "sub_aois":     list[dict],     # per-file: {sub_aoi_id, file_name, geometry}
+            "is_multi_aoi": bool,
+            "ref_path":     Path | None,    # resolved path to reference buildings file
+        }
+    """
+    root         = Path(cfg.get("root_dir", "."))
+    tracker_path = Path(cfg["aoi_tracker"])
+    if not tracker_path.is_absolute():
+        tracker_path = root / tracker_path
+
+    df = pd.read_csv(tracker_path, dtype=str)
+    df.columns = df.columns.str.strip()
+
+    # Suitable filter — same logic as downloader
+    suitable_col = next((c for c in df.columns if "suitable" in c.lower()), None)
+    if suitable_col:
+        before = len(df)
+        df = df[df[suitable_col].astype(str).str.lower() == "yes"].copy()
+        log.info("Validation tracker: %d -> %d suitable rows.", before, len(df))
+
+    id_col = "dataset_folder_name"
+    df = df.dropna(subset=[id_col]).copy()
+    df = df[df[id_col].str.strip() != ""]
+
+    # Identify reference file column
+    ref_col = next(
+        (c for c in df.columns if "reference" in c.lower() and "file" in c.lower()), None
+    )
+
+    datasets: List[Dict] = []
+
+    for dataset_id, group in df.groupby(id_col, sort=False):
+        dataset_id = str(dataset_id)
+
+        # Collect all AOI file paths (pipe-separated values and/or multiple rows)
+        aoi_entries: List[Tuple[str, Path]] = []
+        for _, row in group.iterrows():
+            raw_aoi = str(row.get("aoi_file_name", "") or "")
+            for part in raw_aoi.split("|"):
+                part = part.strip()
+                if part:
+                    aoi_entries.append((part, data_dir / dataset_id / "aoi" / part))
+
+        existing = [(fname, p) for fname, p in aoi_entries if p.exists()]
+        if not existing:
+            log.warning("Validation | %s: no AOI files found on disk, skipping.", dataset_id)
+            continue
+
+        # Load each sub-AOI individually (same pattern as download pipeline)
+        sub_aois: List[Dict] = []
+        parts_gdf: List[gpd.GeoDataFrame] = []
+        for fname, p in existing:
+            try:
+                gdf_part = load_aoi(p, crs_out="EPSG:4326")
+                parts_gdf.append(gdf_part)
+                sub_aois.append({
+                    "sub_aoi_id": _extract_sub_aoi_id(fname),
+                    "file_name":  fname,
+                    "geometry":   gdf_part.union_all(),
+                })
+            except Exception as exc:
+                log.warning("Validation | %s: failed to load AOI %s: %s", dataset_id, p, exc)
+
+        if not parts_gdf:
+            log.warning("Validation | %s: empty AOI after loading, skipping.", dataset_id)
+            continue
+
+        combined = gpd.GeoDataFrame(
+            pd.concat(parts_gdf, ignore_index=True), crs=parts_gdf[0].crs
+        )
+        aoi = combined.dissolve().reset_index(drop=True) if len(combined) > 1 else combined
+
+        # Resolve reference file path(s) — the tracker cell may contain a
+        # pipe-separated list for multi-AOI datasets (e.g. bgd-rohingya).
+        ref_paths: List[Path] = []
+        if ref_col:
+            for _, row in group.iterrows():
+                raw_ref = str(row.get(ref_col, "") or "")
+                for part in raw_ref.split("|"):
+                    part = part.strip()
+                    if part:
+                        p = data_dir / dataset_id / "vector" / part
+                        if p not in ref_paths:
+                            ref_paths.append(p)
+
+        slug = dataset_id.replace("-", "_").replace(" ", "_")
+        datasets.append({
+            "id":           dataset_id,
+            "slug":         slug,
+            "aoi":          aoi,
+            "sub_aois":     sub_aois,
+            "is_multi_aoi": len(sub_aois) > 1,
+            "ref_paths":    ref_paths,
+            # Back-compat: single-file ref as before; None for multi-file cases
+            "ref_path":     ref_paths[0] if len(ref_paths) == 1 else None,
+        })
+
+    log.info("Loaded %d dataset(s) for validation.", len(datasets))
+    return datasets
+
+
 def get_projected_crs(gdf: gpd.GeoDataFrame) -> str:
     if gdf.crs and not gdf.crs.is_geographic:
         gdf = gdf.to_crs(epsg=4326)

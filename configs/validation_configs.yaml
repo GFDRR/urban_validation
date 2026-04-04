@@ -77,7 +77,7 @@ raster:
         oversample_factor: 16
 
 output:
-  overwrite: false
+  overwrite: true
   metrics:
     save_tile_level: true   # also persist per-dataset tile-level parquets
   figures:
