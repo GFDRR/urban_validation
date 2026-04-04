@@ -2,9 +2,9 @@
 Building dataset validation pipeline.
 
 Usage:
-    v = UrbanValidator("configs/validation_configs.yaml")
+    v = Validator("configs/validation_configs.yaml")
     v.validate_vector()
-    v.validate_raster()   # not yet implemented
+    v.validate_raster()
 """
 from __future__ import annotations
 
@@ -23,13 +23,16 @@ import psutil
 import yaml
 from matplotlib._pylab_helpers import Gcf
 
-from src.metrics import compute_tile_metrics
+from src.metrics import compute_tile_metrics, compute_raster_tile_metrics
 from src.output import (
     fig_name,
     plot_iou_dist,
     plot_iou_per_building_sizes,
+    plot_raster_rel_area_error_boxplot,
+    plot_raster_tile_f1_boxplot,
     save_figure,
     summarize_city,
+    summarize_raster_city,
     tile_f1_box_plot,
     tile_f1_spatial_dist,
 )
@@ -85,8 +88,15 @@ class UrbanValidator:
         return results
 
     def validate_raster(self) -> Dict[str, bool]:
-        """Run raster validation for all datasets. Not yet implemented."""
-        raise NotImplementedError("Raster validation is not yet implemented.")
+        """Run raster validation for all datasets. Returns {dataset_id: success}."""
+        results: Dict[str, bool] = {}
+        for ds in self.datasets:
+            try:
+                results[ds["id"]] = self._validate_raster_dataset(ds)
+            except Exception:
+                log.exception("[%s] Unhandled error during raster validation.", ds["id"])
+                results[ds["id"]] = False
+        return results
 
     # ── Vector validation ─────────────────────────────────────────────────────
 
@@ -392,6 +402,245 @@ class UrbanValidator:
             except Exception:
                 log.warning("[%s] plot_iou_per_building_sizes failed:\n%s",
                             dataset_id, traceback.format_exc())
+
+    # ── Raster validation ─────────────────────────────────────────────────────
+
+    def _validate_raster_dataset(self, ds: dict) -> bool:
+        """Run the full raster validation pipeline for one dataset."""
+        dataset_id = ds["id"]
+
+        rast_cfg = self.cfg.get("raster", {})
+        if not rast_cfg:
+            log.warning("[%s] No raster config found — skipping.", dataset_id)
+            return False
+
+        rast_pre     = rast_cfg.get("preprocessing", {})
+        tau_frac     = float(rast_pre.get("tau_frac", 0.2))
+        oversample   = int(rast_pre.get("oversample_factor", 4))
+        all_touched  = bool(rast_pre.get("all_touched", False))
+        min_area     = float(self.cfg["vector"]["preprocessing"]["min_area_m2"])
+        fix_geoms    = bool(self.cfg["vector"]["preprocessing"].get("fix_invalid_geoms", True))
+        tile_size    = float(self.cfg["vector"]["preprocessing"]["tile_size_m"])
+
+        out_cfg   = self.cfg.get("output", {})
+        overwrite = bool(out_cfg.get("overwrite", False))
+        dpi       = int(out_cfg.get("figures", {}).get("dpi", 200))
+        fmt       = str(out_cfg.get("figures", {}).get("fmt", "png"))
+
+        city_slug   = dataset_id.lower()
+        metrics_dir = self.root / "outputs" / "metrics" / city_slug
+        figures_dir = self.root / "outputs" / "figures" / city_slug
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        figures_dir.mkdir(parents=True, exist_ok=True)
+
+        sentinel = metrics_dir / "raster_metrics_tiles_all_datasets.parquet"
+        if sentinel.exists() and not overwrite:
+            log.info("[%s] Raster already complete — skipping.", dataset_id)
+            return True
+
+        # Reference files
+        ref_paths: List[Path] = ds.get("ref_paths") or []
+        if not ref_paths and ds.get("ref_path"):
+            ref_paths = [ds["ref_path"]]
+        existing_refs = [p for p in ref_paths if p.exists()]
+        if not existing_refs:
+            missing = " | ".join(str(p) for p in ref_paths) if ref_paths else "none specified"
+            log.warning("[%s] Reference file(s) not found (%s) — skipping raster validation.",
+                        dataset_id, missing)
+            return False
+
+        log.info("━━━━  %s (raster)  ━━━━", dataset_id)
+        _log_memory(f"{dataset_id} raster start")
+
+        # Build tiles from AOI
+        crs      = get_projected_crs(ds["aoi"])
+        aoi_proj = ds["aoi"].to_crs(crs)
+        tiles    = make_tiles(aoi_proj, tile_size)
+        aoi_union = aoi_proj.geometry.union_all()
+        log.info("[%s] Raster CRS: %s | %d tiles.", dataset_id, crs, len(tiles))
+        del aoi_proj
+
+        # Load and merge reference buildings
+        ref_parts = [
+            load_buildings(path=p, crs_work=crs, min_area_m2=min_area,
+                           fix_invalid_geoms=fix_geoms)
+            for p in existing_refs
+        ]
+        ref_all = (
+            gpd.GeoDataFrame(pd.concat(ref_parts, ignore_index=True), crs=ref_parts[0].crs)
+            if len(ref_parts) > 1 else ref_parts[0]
+        )
+        del ref_parts
+        ref_sindex = ref_all.sindex
+        log.info("[%s] Reference buildings: %d", dataset_id, len(ref_all))
+
+        # Discover and evaluate each raster candidate
+        rast_dir          = self.data_dir / dataset_id / "raster"
+        city_slug_us      = city_slug.replace("-", "_")
+        per_ds_tile_paths: List[Path] = []
+
+        for cand_cfg in rast_cfg.get("datasets", []):
+            if not cand_cfg.get("enabled", True):
+                continue
+
+            ds_name = cand_cfg["name"].replace("-", "_")
+            year    = cand_cfg.get("year")          # e.g. 2023, "2023q4", 2025
+
+            # Build an exact filename when year is given; fall back to glob otherwise.
+            # File naming mirrors the downloader:
+            #   obt        → {city_slug}_obt_{year}.tif
+            #   tempo      → {city_slug}_tempo_{year}.tif   (year = "2023q4")
+            #   ghsl_*     → {city_slug}_ghsl_{product}_{year}.tif
+            if year is not None:
+                exact = rast_dir / f"{city_slug_us}_{ds_name}_{year}.tif"
+                candidate_files = [exact] if exact.exists() else []
+                pattern = f"{city_slug_us}_{ds_name}_{year}.tif"
+            else:
+                pattern = f"{city_slug_us}_{ds_name}*.tif"
+                candidate_files = sorted(rast_dir.glob(pattern))
+
+            if not candidate_files:
+                log.warning("[%s / %s] No raster file found (pattern: %s).",
+                            dataset_id, ds_name, pattern)
+                continue
+
+            cand_path = candidate_files[0]
+
+            # Label used for output files; includes year to avoid collisions across runs
+            ds_label = f"{ds_name}_{year}" if year is not None else ds_name
+            log.info("[%s / %s] Raster candidate: %s", dataset_id, ds_label, cand_path.name)
+
+            tile_path = self._run_raster_candidate(
+                dataset_id=dataset_id,
+                ds_label=ds_label,
+                cand_path=cand_path,
+                cand_cfg=cand_cfg,
+                ref_all=ref_all,
+                ref_sindex=ref_sindex,
+                aoi_union=aoi_union,
+                tiles=tiles,
+                metrics_dir=metrics_dir,
+                tau_frac=tau_frac,
+                oversample=oversample,
+                all_touched=all_touched,
+            )
+            if tile_path:
+                per_ds_tile_paths.append(tile_path)
+
+        del ref_all, ref_sindex
+        gc.collect()
+
+        if not per_ds_tile_paths:
+            log.warning("[%s] No raster tile metrics produced — skipping output.", dataset_id)
+            return False
+
+        # Combine and save
+        metrics_all = pd.concat(
+            [pd.read_parquet(p) for p in per_ds_tile_paths], ignore_index=True
+        )
+        metrics_all.to_parquet(sentinel, index=False)
+
+        city_summary = summarize_raster_city(dataset_id, metrics_all)
+        city_summary.to_parquet(
+            metrics_dir / "raster_city_summary_all_datasets.parquet", index=False
+        )
+        city_summary.to_csv(
+            metrics_dir / "raster_city_summary_all_datasets.csv", index=False
+        )
+        log.info("[%s] Raster city summary saved.", dataset_id)
+        del city_summary
+
+        try:
+            self._make_raster_figures(
+                dataset_id=dataset_id,
+                metrics_all=metrics_all,
+                tiles=tiles,
+                figures_dir=figures_dir,
+                dpi=dpi,
+                fmt=fmt,
+            )
+        finally:
+            _purge_matplotlib()
+
+        del metrics_all, tiles
+        gc.collect()
+        _log_memory(f"{dataset_id} raster end")
+        log.info("[%s] ✓ Raster complete.", dataset_id)
+        return True
+
+    def _run_raster_candidate(
+        self,
+        *,
+        dataset_id: str,
+        ds_label: str,
+        cand_path: Path,
+        cand_cfg: dict,
+        ref_all: gpd.GeoDataFrame,
+        ref_sindex,
+        aoi_union,
+        tiles: gpd.GeoDataFrame,
+        metrics_dir: Path,
+        tau_frac: float,
+        oversample: int,
+        all_touched: bool,
+    ) -> Optional[Path]:
+        """Evaluate one raster candidate over all tiles. Returns tile-metrics parquet path."""
+        tile_df = compute_raster_tile_metrics(
+            raster_path=cand_path,
+            cand_cfg=cand_cfg,
+            ref_all=ref_all,
+            ref_sindex=ref_sindex,
+            aoi_union=aoi_union,
+            tiles=tiles,
+            tau_frac=tau_frac,
+            default_oversample=oversample,
+            default_all_touched=all_touched,
+        )
+        if tile_df.empty:
+            log.warning("[%s / %s] No raster tile metrics produced.", dataset_id, ds_label)
+            return None
+
+        tile_df["city"]    = dataset_id
+        tile_df["dataset"] = ds_label
+
+        out_path = metrics_dir / f"raster_metrics_tiles_{ds_label}.parquet"
+        tile_df.to_parquet(out_path, index=False)
+        log.info("[%s / %s] Raster tile metrics saved → %s", dataset_id, ds_label, out_path.name)
+        _log_memory(f"{dataset_id}/{ds_label} raster done")
+        return out_path
+
+    def _make_raster_figures(
+        self,
+        *,
+        dataset_id: str,
+        metrics_all: pd.DataFrame,
+        tiles: gpd.GeoDataFrame,
+        figures_dir: Path,
+        dpi: int,
+        fmt: str,
+    ) -> None:
+        """Generate and save standard raster visualisations for one dataset."""
+        matplotlib.use("Agg")
+        city_label = dataset_id.replace("-", " ").title()
+
+        try:
+            plot_raster_tile_f1_boxplot(metrics_all, figures_dir, city_label, dpi=dpi, fmt=fmt)
+        except Exception:
+            log.warning("[%s] plot_raster_tile_f1_boxplot failed:\n%s",
+                        dataset_id, traceback.format_exc())
+
+        try:
+            tile_f1_spatial_dist(tiles, metrics_all, figures_dir, city_label, dpi=dpi, fmt=fmt)
+        except Exception:
+            log.warning("[%s] tile_f1_spatial_dist (raster) failed:\n%s",
+                        dataset_id, traceback.format_exc())
+
+        try:
+            plot_raster_rel_area_error_boxplot(metrics_all, figures_dir, city_label,
+                                               dpi=dpi, fmt=fmt)
+        except Exception:
+            log.warning("[%s] plot_raster_rel_area_error_boxplot failed:\n%s",
+                        dataset_id, traceback.format_exc())
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────

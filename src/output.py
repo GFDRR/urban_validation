@@ -299,3 +299,107 @@ def plot_iou_per_building_sizes(
             save_figure(fig, figures_dir, fig_name(city, stem, fmt), dpi=dpi)
             plt.close(fig)
         del size_stats
+
+
+# ── Raster output ─────────────────────────────────────────────────────────────
+
+def summarize_raster_city(city: str, metrics_tiles: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate tile-level raster metrics into one summary row per dataset."""
+    rows = []
+    for ds_name, g in metrics_tiles.groupby("dataset"):
+        tp = int(g["tp"].sum())
+        fp = int(g["fp"].sum())
+        fn = int(g["fn"].sum())
+
+        valid_area_total_m2 = float(g["valid_area_m2"].sum())
+        tp_m2 = float((g["tp"] * g["pixel_area_m2"]).sum())
+        fp_m2 = float((g["fp"] * g["pixel_area_m2"]).sum())
+        fn_m2 = float((g["fn"] * g["pixel_area_m2"]).sum())
+
+        precision_area = tp_m2 / (tp_m2 + fp_m2) if (tp_m2 + fp_m2) > 0 else 0.0
+        recall_area    = tp_m2 / (tp_m2 + fn_m2) if (tp_m2 + fn_m2) > 0 else 0.0
+        f1_area        = (2 * precision_area * recall_area / (precision_area + recall_area)
+                          if (precision_area + recall_area) > 0 else 0.0)
+
+        f1_s   = g["f1"].dropna()
+        err_s  = g["rel_area_error"].dropna()
+        qd_s   = g["quantity_disagreement"].dropna()
+        ad_s   = g["allocation_disagreement"].dropna()
+
+        def _r(v): return round(float(v), 4) if np.isfinite(v) else float("nan")
+
+        rows.append({
+            "city":                          city,
+            "dataset":                       ds_name,
+            "n_tiles":                       int(g["tile_id"].nunique()),
+            "valid_area_total_m2":           valid_area_total_m2,
+            "tp_m2":                         tp_m2,
+            "fp_m2":                         fp_m2,
+            "fn_m2":                         fn_m2,
+            "tp_area_rate":                  _r(tp_m2 / valid_area_total_m2) if valid_area_total_m2 > 0 else float("nan"),
+            "fp_area_rate":                  _r(fp_m2 / valid_area_total_m2) if valid_area_total_m2 > 0 else float("nan"),
+            "fn_area_rate":                  _r(fn_m2 / valid_area_total_m2) if valid_area_total_m2 > 0 else float("nan"),
+            "precision_area":                _r(precision_area),
+            "recall_area":                   _r(recall_area),
+            "f1_area":                       _r(f1_area),
+            "tile_f1_mean":                  _r(f1_s.mean()) if len(f1_s) else float("nan"),
+            "tile_f1_median":                _r(f1_s.median()) if len(f1_s) else float("nan"),
+            "tile_f1_p25":                   _r(f1_s.quantile(0.25)) if len(f1_s) else float("nan"),
+            "tile_f1_p75":                   _r(f1_s.quantile(0.75)) if len(f1_s) else float("nan"),
+            "rel_area_error_mean":           _r(err_s.mean()) if len(err_s) else float("nan"),
+            "rel_area_error_median":         _r(err_s.median()) if len(err_s) else float("nan"),
+            "quantity_disagreement_mean":    _r(qd_s.mean()) if len(qd_s) else float("nan"),
+            "allocation_disagreement_mean":  _r(ad_s.mean()) if len(ad_s) else float("nan"),
+            "signed_area_bias_total_m2":     float(g["signed_area_bias_m2"].sum()),
+        })
+    return pd.DataFrame(rows)
+
+
+def plot_raster_tile_f1_boxplot(
+    metrics_tiles: pd.DataFrame,
+    figures_dir: Path,
+    city: str,
+    dpi: int = 200,
+    fmt: str = "png",
+) -> None:
+    """Box plot of per-tile raster F1, one box per dataset."""
+    fig, ax = plt.subplots(figsize=(10, 4))
+    sns.boxplot(
+        data=metrics_tiles, x="dataset", y="f1", ax=ax,
+        palette="Set2", linewidth=0.8,
+        flierprops=dict(marker="o", markersize=3, alpha=0.4),
+    )
+    ax.set_title(f"Raster tile-level F1 scores — {city}", fontsize=13, fontweight="bold")
+    ax.set_xlabel("Dataset", fontsize=11)
+    ax.set_ylabel("F1", fontsize=11)
+    ax.set_ylim(0, 1)
+    ax.grid(axis="y", alpha=0.3)
+    sns.despine()
+    fig.tight_layout()
+    save_figure(fig, figures_dir, fig_name(city, "raster_tile_f1_boxplot", fmt), dpi=dpi)
+    plt.close(fig)
+
+
+def plot_raster_rel_area_error_boxplot(
+    metrics_tiles: pd.DataFrame,
+    figures_dir: Path,
+    city: str,
+    dpi: int = 200,
+    fmt: str = "png",
+) -> None:
+    """Box plot of per-tile relative area error, one box per dataset."""
+    fig, ax = plt.subplots(figsize=(10, 4))
+    sns.boxplot(
+        data=metrics_tiles, x="dataset", y="rel_area_error", ax=ax,
+        palette="Set2", linewidth=0.8,
+        flierprops=dict(marker="o", markersize=3, alpha=0.4),
+    )
+    ax.axhline(0, linestyle="--", linewidth=1, color="grey")
+    ax.set_title(f"Raster tile-level relative area error — {city}", fontsize=13, fontweight="bold")
+    ax.set_xlabel("Dataset", fontsize=11)
+    ax.set_ylabel("Relative area error", fontsize=11)
+    ax.grid(axis="y", alpha=0.3)
+    sns.despine()
+    fig.tight_layout()
+    save_figure(fig, figures_dir, fig_name(city, "raster_tile_rel_area_error_boxplot", fmt), dpi=dpi)
+    plt.close(fig)
