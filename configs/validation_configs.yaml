@@ -63,6 +63,7 @@ raster:
         clamp_min:      0.0
         clamp_max:      1.0
         threshold_frac: 0.2
+        nodata:         null     # values above 1.0 are nodata; see https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_Research_open-buildings-temporal_v1#bands
 
     - name:    tempo
       label:   "Microsoft TEMPO"
@@ -74,6 +75,7 @@ raster:
         clamp_min:      0.0
         clamp_max:      1.0
         threshold_frac: 0.2
+        nodata:         null     # values above 1.0 are nodata; see https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_Research_open-buildings-temporal_v1#bands
       rasterization:
         oversample_factor: 16
 
@@ -88,6 +90,7 @@ raster:
         method:              area_m2   # values are built-up surface area in m² per pixel
         band:                1
         clamp_to_pixel_area: true
+        nodata:             null          # zero means no built-up surface; nodata values are also zero, but we'll mask them out later based on the "method" and "clamp_to_pixel_area" settings
       rasterization:
         oversample_factor: 16
 

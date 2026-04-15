@@ -1,5 +1,5 @@
 """
-TODO: contains vector and raster metrics for assessing Building Footprint Datasets for different use cases
+contains vector and raster metrics for assessing Building Footprint Datasets for different use cases
 
 1. match_buildings_iou: chunked sjoin + vectorised ops to cap peak RAM
 2. boundary_f_pair: unchanged (small per-call)
@@ -39,9 +39,7 @@ sh.setFormatter(fmt)
 if not logger.handlers:
     logger.addHandler(sh)
 
-# ── Tunable: maximum candidate-side rows per sjoin chunk ──────────────
-# Keeps peak RAM of the vectorised geometry arrays bounded.
-# On Colab free tier (~12 GB) 50k is conservative; increase on beefier machines.
+# tunable: maximum candidate-side rows per sjoin chunk: keeps peak RAM of the vectorised geometry arrays bounded.
 _SJOIN_CHUNK_SIZE = int(os.environ.get("SJOIN_CHUNK_SIZE", 50_000))
 
 
@@ -286,7 +284,7 @@ def match_buildings_iou(
     ious_arr = triples[:, 2]
     del triples
 
-    # Greedy 1-to-1 matching (same logic as original)
+    # Greedy 1-to-1 matching
     order = np.argsort(-ious_arr)
     ref_ids_arr = ref_ids_arr[order]
     cand_ids_arr = cand_ids_arr[order]
@@ -324,8 +322,7 @@ def match_buildings_iou(
     return matches_df, ref_unmatched, cand_unmatched
 
 
-# ── Raster validation ─────────────────────────────────────────────────────────
-
+# Raster validation
 def _choose_resampling(binarize_spec: dict) -> Resampling:
     """Nearest for categorical/binary rasters; bilinear for continuous ones."""
     if binarize_spec.get("method", "") in {"wsf_tracker", "value_in", "nonzero", "binary"}:
@@ -402,10 +399,14 @@ def _read_window_padded(src, band: int, window: Window, out_shape: tuple,
 
     out = np.full(out_shape, fill_value, dtype="float32")
     data = src.read(band, window=w_int, boundless=False).astype("float32")
-    row_off = int(round(w_int.row_off - window.row_off))
-    col_off = int(round(w_int.col_off - window.col_off))
+    row_off = max(0, int(round(w_int.row_off - window.row_off)))
+    col_off = max(0, int(round(w_int.col_off - window.col_off)))
     h, w = data.shape
-    out[row_off: row_off + h, col_off: col_off + w] = data
+    # Clamp to avoid overflow when FP rounding makes data slightly larger than out_shape
+    h_clip = min(h, out_shape[0] - row_off)
+    w_clip = min(w, out_shape[1] - col_off)
+    if h_clip > 0 and w_clip > 0:
+        out[row_off: row_off + h_clip, col_off: col_off + w_clip] = data[:h_clip, :w_clip]
     return out
 
 
@@ -512,97 +513,110 @@ def compute_raster_tile_metrics(
     with rasterio.open(raster_path) as _src:
         ds = _open_raster_in_crs(_src, str(tiles.crs), bin_spec)
 
-        nodata = bin_spec["nodata"] if "nodata" in bin_spec else ds.nodata
+        # nodata = bin_spec["nodata"] if "nodata" in bin_spec else ds.nodata
+        nodata = bin_spec.get("nodata", None)
 
         for tile_row in tiles.itertuples():
             tile_id  = int(tile_row.tile_id)
             geom     = tile_row.geometry
             minx, miny, maxx, maxy = geom.bounds
 
-            win = from_bounds(minx, miny, maxx, maxy, transform=ds.transform)
-            if win.width <= 0 or win.height <= 0:
+            try:
+                win = from_bounds(minx, miny, maxx, maxy, transform=ds.transform)
+                if win.width <= 0 or win.height <= 0:
+                    continue
+
+                out_shape  = (int(round(win.height)), int(round(win.width)))
+                # fill       = float(nodata) if nodata is not None else 0.0
+                fill = float(nodata) if nodata is not None else np.nan
+                arr        = _read_window_padded(ds, band, win, out_shape, fill_value=fill)
+                transform  = riowin.transform(win, ds.transform)
+                pixel_area = _pixel_area_from_transform(transform)
+
+                # Valid pixels: inside AOI and not nodata
+                aoi_mask = _aoi_mask_for_window(aoi_union, arr.shape, transform,
+                                                all_touched=all_touched)
+                valid = aoi_mask.copy()
+                method = bin_spec.get("method", "")
+
+                if nodata is not None:
+                    if method in {"fraction", "percent", "area_m2"}:
+                        # Do NOT mask zeros — they are valid
+                        valid &= np.isfinite(arr)
+                    else:
+                        valid &= (arr != nodata)
+
+                n_valid = int(valid.sum())
+                if n_valid == 0:
+                    rows.append(_empty_raster_tile_row(tile_id, pixel_area))
+                    continue
+
+                # Prediction
+                A_pred   = predicted_area_from_raster(arr, transform, bin_spec)
+                pred_bin = pred_bin_from_pred_area(A_pred, transform, bin_spec, tau_frac)
+
+                # Reference rasterization
+                possible  = list(ref_sindex.intersection(geom.bounds))
+                ref_tile  = ref_all.iloc[possible]
+                ref_tile  = ref_tile[ref_tile.intersects(geom)]
+                ref_geoms = list(ref_tile.geometry)
+
+                f_ref    = _rasterize_ref_fraction(ref_geoms, arr.shape, transform,
+                                                   oversample=oversample, all_touched=all_touched)
+                A_ref    = f_ref * pixel_area
+                ref_bin  = (f_ref >= tau_frac)
+
+                # Confusion matrix on valid pixels
+                p  = pred_bin[valid]
+                r  = ref_bin[valid]
+                tp = int(np.logical_and(p, r).sum())
+                fp = int(np.logical_and(p, ~r).sum())
+                fn = int(np.logical_and(~p, r).sum())
+
+                precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+                recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+                f1        = (2 * precision * recall / (precision + recall)
+                             if (precision + recall) > 0 else 0.0)
+
+                # Area-based metrics
+                area_ref  = float(A_ref[valid].sum())
+                area_pred = float(A_pred[valid].sum())
+                rel_err   = abs(area_pred - area_ref) / area_ref if area_ref > 0 else np.nan
+                bias      = area_pred - area_ref
+
+                # Pontius-style disagreement (binary)
+                n_pred = int(p.sum())
+                n_ref  = int(r.sum())
+                qd     = abs(n_pred - n_ref) / n_valid
+                ad     = (2 * min(fp, fn)) / n_valid
+
+                rows.append({
+                    "tile_id":                 tile_id,
+                    "tp":                      tp,
+                    "fp":                      fp,
+                    "fn":                      fn,
+                    "precision":               precision,
+                    "recall":                  recall,
+                    "f1":                      f1,
+                    "quantity_disagreement":   float(qd),
+                    "allocation_disagreement": float(ad),
+                    "n_valid_pixels":          n_valid,
+                    "pixel_area_m2":           float(pixel_area),
+                    "valid_area_m2":           float(n_valid) * float(pixel_area),
+                    "area_ref_m2":             area_ref,
+                    "area_pred_m2":            area_pred,
+                    "rel_area_error":          rel_err,
+                    "signed_area_bias_m2":     bias,
+                })
+
+                del arr, A_pred, pred_bin, f_ref, A_ref, ref_bin, aoi_mask, valid, p, r
+
+            except Exception as exc:
+                logger.warning(
+                    "Tile %d skipped due to error: %s: %s",
+                    tile_id, type(exc).__name__, exc,
+                )
                 continue
-
-            out_shape  = (int(round(win.height)), int(round(win.width)))
-            fill       = float(nodata) if nodata is not None else 0.0
-            arr        = _read_window_padded(ds, band, win, out_shape, fill_value=fill)
-            transform  = riowin.transform(win, ds.transform)
-            pixel_area = _pixel_area_from_transform(transform)
-
-            # Valid pixels: inside AOI and not nodata
-            aoi_mask = _aoi_mask_for_window(aoi_union, arr.shape, transform,
-                                             all_touched=all_touched)
-            valid = aoi_mask.copy()
-            if nodata is not None:
-                # Don't mask out valid zeros on continuous rasters
-                if not (nodata in (0, 255) and
-                        bin_spec.get("method", "") in {"fraction", "percent", "area_m2"}):
-                    valid &= (arr != nodata)
-
-            n_valid = int(valid.sum())
-            if n_valid == 0:
-                rows.append(_empty_raster_tile_row(tile_id, pixel_area))
-                continue
-
-            # Prediction
-            A_pred   = predicted_area_from_raster(arr, transform, bin_spec)
-            pred_bin = pred_bin_from_pred_area(A_pred, transform, bin_spec, tau_frac)
-
-            # Reference rasterization
-            possible  = list(ref_sindex.intersection(geom.bounds))
-            ref_tile  = ref_all.iloc[possible]
-            ref_tile  = ref_tile[ref_tile.intersects(geom)]
-            ref_geoms = list(ref_tile.geometry)
-
-            f_ref    = _rasterize_ref_fraction(ref_geoms, arr.shape, transform,
-                                                oversample=oversample, all_touched=all_touched)
-            A_ref    = f_ref * pixel_area
-            ref_bin  = (f_ref >= tau_frac)
-
-            # Confusion matrix on valid pixels
-            p  = pred_bin[valid]
-            r  = ref_bin[valid]
-            tp = int(np.logical_and(p, r).sum())
-            fp = int(np.logical_and(p, ~r).sum())
-            fn = int(np.logical_and(~p, r).sum())
-
-            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-            recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-            f1        = (2 * precision * recall / (precision + recall)
-                         if (precision + recall) > 0 else 0.0)
-
-            # Area-based metrics
-            area_ref  = float(A_ref[valid].sum())
-            area_pred = float(A_pred[valid].sum())
-            rel_err   = abs(area_pred - area_ref) / area_ref if area_ref > 0 else np.nan
-            bias      = area_pred - area_ref
-
-            # Pontius-style disagreement (binary)
-            n_pred = int(p.sum())
-            n_ref  = int(r.sum())
-            qd     = abs(n_pred - n_ref) / n_valid
-            ad     = (2 * min(fp, fn)) / n_valid
-
-            rows.append({
-                "tile_id":                 tile_id,
-                "tp":                      tp,
-                "fp":                      fp,
-                "fn":                      fn,
-                "precision":               precision,
-                "recall":                  recall,
-                "f1":                      f1,
-                "quantity_disagreement":   float(qd),
-                "allocation_disagreement": float(ad),
-                "n_valid_pixels":          n_valid,
-                "pixel_area_m2":           float(pixel_area),
-                "valid_area_m2":           float(n_valid) * float(pixel_area),
-                "area_ref_m2":             area_ref,
-                "area_pred_m2":            area_pred,
-                "rel_area_error":          rel_err,
-                "signed_area_bias_m2":     bias,
-            })
-
-            del arr, A_pred, pred_bin, f_ref, A_ref, ref_bin, aoi_mask, valid, p, r
 
     return pd.DataFrame(rows)
 
