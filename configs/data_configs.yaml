@@ -70,3 +70,16 @@ datasets:
         band: "built_volume_total"
         scale: 100
         years: [1975, 1980, 1985, 1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025, 2030]
+
+  wsf_tracker:
+    enabled: true
+    drive_root: "/content/drive/MyDrive/WSFsoftRelease"
+    tif_glob: "*.tif"
+    make_mosaic: true
+    keep_tile_copies: false
+    output_prefix: "wsf_tracker"
+    first_timestamp: "2016-07-01"
+    interval_months: 6
+    nodata: 0
+    tile_degree_size: 2
+    
