@@ -16,30 +16,28 @@ from typing import Dict, List, Optional
 
 import geopandas as gpd
 import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import psutil
 import yaml
-from matplotlib._pylab_helpers import Gcf
 
 from src.metrics import compute_tile_metrics, compute_raster_tile_metrics
 from src.output import (
-    fig_name,
     plot_iou_dist,
     plot_iou_per_building_sizes,
     plot_raster_rel_area_error_boxplot,
     plot_raster_tile_f1_boxplot,
-    save_figure,
+    purge_matplotlib,
     summarize_city,
     summarize_raster_city,
     tile_f1_box_plot,
     tile_f1_spatial_dist,
 )
 from src.utils import (
+    consolidate_match_chunks,
     get_projected_crs,
     load_buildings,
     load_validation_datasets,
+    log_memory,
     make_tiles,
     subset_by_tile,
 )
@@ -74,8 +72,6 @@ class UrbanValidator:
         self.datasets = load_validation_datasets(self.cfg, self.data_dir)
         log.info("Loaded %d dataset(s) for validation.", len(self.datasets))
 
-    # ── Public interface ──────────────────────────────────────────────────────
-
     def validate_vector(self) -> Dict[str, bool]:
         """Run vector validation for all datasets. Returns {dataset_id: success}."""
         results: Dict[str, bool] = {}
@@ -98,8 +94,7 @@ class UrbanValidator:
                 results[ds["id"]] = False
         return results
 
-    # ── Vector validation ─────────────────────────────────────────────────────
-
+    # Vector validation
     def _validate_vector_dataset(self, ds: dict) -> bool:
         """Run the full vector validation pipeline for one dataset."""
         dataset_id = ds["id"]
@@ -145,7 +140,7 @@ class UrbanValidator:
             return True
 
         log.info("━━━━  %s  ━━━━", dataset_id)
-        _log_memory(f"{dataset_id} start")
+        log_memory(f"{dataset_id} start")
 
         # Detect projected CRS and build tiles from the dissolved AOI
         crs      = get_projected_crs(ds["aoi"])
@@ -256,11 +251,11 @@ class UrbanValidator:
                 fmt=fmt,
             )
         finally:
-            _purge_matplotlib()
+            purge_matplotlib()
 
         del metrics_all, matches_all, tiles
         gc.collect()
-        _log_memory(f"{dataset_id} end")
+        log_memory(f"{dataset_id} end")
         log.info("[%s] ✓ Complete.", dataset_id)
         return True
 
@@ -346,13 +341,12 @@ class UrbanValidator:
         # Consolidate match chunks into one file
         match_out = metrics_dir / f"vector_matches_{ds_name}.parquet"
         _flush()
-        _consolidate_match_chunks(metrics_dir, ds_name, match_out, chunk_counter[0])
+        consolidate_match_chunks(metrics_dir, ds_name, match_out)
 
-        _log_memory(f"{dataset_id}/{ds_name} done")
+        log_memory(f"{dataset_id}/{ds_name} done")
         return returned_tile_path, match_out
 
-    # ── Figure generation ─────────────────────────────────────────────────────
-
+    # Vector figure generation
     def _make_figures(
         self,
         *,
@@ -403,8 +397,7 @@ class UrbanValidator:
                 log.warning("[%s] plot_iou_per_building_sizes failed:\n%s",
                             dataset_id, traceback.format_exc())
 
-    # ── Raster validation ─────────────────────────────────────────────────────
-
+    # Raster validation
     def _validate_raster_dataset(self, ds: dict) -> bool:
         """Run the full raster validation pipeline for one dataset."""
         dataset_id = ds["id"]
@@ -450,7 +443,7 @@ class UrbanValidator:
             return False
 
         log.info("━━━━  %s (raster)  ━━━━", dataset_id)
-        _log_memory(f"{dataset_id} raster start")
+        log_memory(f"{dataset_id} raster start")
 
         # Build tiles from AOI
         crs      = get_projected_crs(ds["aoi"])
@@ -510,20 +503,25 @@ class UrbanValidator:
             ds_label = f"{ds_name}_{year}" if year is not None else ds_name
             log.info("[%s / %s] Raster candidate: %s", dataset_id, ds_label, cand_path.name)
 
-            tile_path = self._run_raster_candidate(
-                dataset_id=dataset_id,
-                ds_label=ds_label,
-                cand_path=cand_path,
-                cand_cfg=cand_cfg,
-                ref_all=ref_all,
-                ref_sindex=ref_sindex,
-                aoi_union=aoi_union,
-                tiles=tiles,
-                metrics_dir=metrics_dir,
-                tau_frac=tau_frac,
-                oversample=oversample,
-                all_touched=all_touched,
-            )
+            try:
+                tile_path = self._run_raster_candidate(
+                    dataset_id=dataset_id,
+                    ds_label=ds_label,
+                    cand_path=cand_path,
+                    cand_cfg=cand_cfg,
+                    ref_all=ref_all,
+                    ref_sindex=ref_sindex,
+                    aoi_union=aoi_union,
+                    tiles=tiles,
+                    metrics_dir=metrics_dir,
+                    tau_frac=tau_frac,
+                    oversample=oversample,
+                    all_touched=all_touched,
+                )
+            except Exception:
+                log.exception("[%s / %s] Raster candidate failed — skipping.",
+                              dataset_id, ds_label)
+                tile_path = None
             if tile_path:
                 per_ds_tile_paths.append(tile_path)
 
@@ -560,11 +558,11 @@ class UrbanValidator:
                 fmt=fmt,
             )
         finally:
-            _purge_matplotlib()
+            purge_matplotlib()
 
         del metrics_all, tiles
         gc.collect()
-        _log_memory(f"{dataset_id} raster end")
+        log_memory(f"{dataset_id} raster end")
         log.info("[%s] ✓ Raster complete.", dataset_id)
         return True
 
@@ -606,7 +604,7 @@ class UrbanValidator:
         out_path = metrics_dir / f"raster_metrics_tiles_{ds_label}.parquet"
         tile_df.to_parquet(out_path, index=False)
         log.info("[%s / %s] Raster tile metrics saved → %s", dataset_id, ds_label, out_path.name)
-        _log_memory(f"{dataset_id}/{ds_label} raster done")
+        log_memory(f"{dataset_id}/{ds_label} raster done")
         return out_path
 
     def _make_raster_figures(
@@ -642,42 +640,3 @@ class UrbanValidator:
             log.warning("[%s] plot_raster_rel_area_error_boxplot failed:\n%s",
                         dataset_id, traceback.format_exc())
 
-
-# ── Module-level helpers ──────────────────────────────────────────────────────
-
-def _consolidate_match_chunks(
-    metrics_dir: Path, ds_name: str, final_path: Path, n_chunks: int
-) -> None:
-    """Read all temp match chunks, concat, write final file, clean up temps."""
-    chunk_files = sorted(metrics_dir.glob(f"_tmp_matches_{ds_name}_*.parquet"))
-
-    if chunk_files:
-        df = pd.concat([pd.read_parquet(f) for f in chunk_files], ignore_index=True)
-        df.to_parquet(final_path, index=False)
-        del df
-        for f in chunk_files:
-            f.unlink()
-    else:
-        pd.DataFrame(columns=[
-            "ref_id", "cand_id", "iou", "area_ref", "area_cand",
-            "rel_area_error", "city", "dataset", "tile_id",
-        ]).to_parquet(final_path, index=False)
-
-
-def _purge_matplotlib() -> None:
-    """Release all matplotlib figures and run gc."""
-    plt.close("all")
-    try:
-        Gcf.destroy_all()
-    except Exception:
-        pass
-    gc.collect()
-
-
-def _log_memory(label: str = "") -> None:
-    """Log current RSS — useful for spotting memory leaks."""
-    try:
-        rss_mb = psutil.Process().memory_info().rss / 1024 ** 2
-        log.info("MEM [%s] RSS = %.0f MB", label, rss_mb)
-    except Exception:
-        pass

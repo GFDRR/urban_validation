@@ -1,18 +1,19 @@
 import datetime
 import gc
-import logging
 from pathlib import Path
-from typing import Optional
-import yaml
 
+import yaml
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import geopandas as gpd
-import matplotlib.pyplot as plt
 import seaborn as sns
 
-from src.utils import load_aoi, make_tiles, load_buildings, subset_by_tile
-from src.metrics import compute_tile_metrics
+try:
+    from matplotlib._pylab_helpers import Gcf
+except ImportError:
+    Gcf = None
 
 # Default building-size bins (m²)
 _DEFAULT_SIZE_BINS   = [0, 25, 50, 100, 500, 1000, np.inf]
@@ -120,8 +121,8 @@ def tile_f1_box_plot(
     """Box plot of per-tile F1 scores, one box per dataset."""
     fig, ax = plt.subplots(figsize=(10, 4))
     sns.boxplot(
-        data=metrics_all, x="dataset", y="f1", ax=ax,
-        palette="Set2", linewidth=0.8,
+        data=metrics_all, x="dataset", y="f1", hue="dataset", ax=ax,
+        palette="Set2", linewidth=0.8, legend=False,
         flierprops=dict(marker="o", markersize=3, alpha=0.4),
     )
     ax.set_title(f"Tile-level F1 scores — {city}", fontsize=13, fontweight="bold")
@@ -133,33 +134,6 @@ def tile_f1_box_plot(
     fig.tight_layout()
     save_figure(fig, figures_dir, fig_name(city, "tile_f1_boxplot", fmt), dpi=dpi)
     plt.close(fig)
-
-
-# def tile_f1_spatial_dist(
-#     tiles: gpd.GeoDataFrame,
-#     metrics_all: pd.DataFrame,
-#     figures_dir: Path,
-#     city: str,
-#     dpi: int = 200,
-#     fmt: str = "png",
-# ) -> None:
-#     """Choropleth map of per-tile F1, one figure per dataset."""
-#     for ds in metrics_all["dataset"].unique():
-#         metrics_ds = metrics_all[metrics_all["dataset"] == ds]
-#         if metrics_ds.empty:
-#             continue
-#         tiles_metrics = tiles.merge(metrics_ds[["tile_id", "f1"]], on="tile_id", how="left")
-#         fig, ax = plt.subplots(figsize=(8, 8))
-#         tiles_metrics.plot(
-#             column="f1", ax=ax, legend=True, cmap="viridis",
-#             vmin=0, vmax=1, edgecolor="none",
-#             legend_kwds={"label": "F1 score", "shrink": 0.6},
-#         )
-#         ax.set_title(f"{city} — Tile-level F1 — {ds}", fontsize=13, fontweight="bold")
-#         ax.set_axis_off()
-#         fig.tight_layout()
-#         save_figure(fig, figures_dir, fig_name(city, f"tile_f1_spatial_{ds}", fmt), dpi=dpi)
-#         plt.close(fig)
 
 def tile_f1_spatial_dist(
     tiles: gpd.GeoDataFrame,
@@ -176,10 +150,8 @@ def tile_f1_spatial_dist(
             continue
         tiles_metrics = tiles.merge(metrics_ds[["tile_id", "f1"]], on="tile_id", how="left")
         del metrics_ds
-        # Reproject to WGS-84 for plotting. GeoPandas' default aspect="auto"
-        # uses cos(latitude°) on geographic CRS; if you plot projected metres
-        # without reprojecting (or CRS/geometry disagree), y is wrong and you get
-        # ValueError: aspect must be finite and positive.
+        # Reproject to WGS-84 for plotting. GeoPandas' default aspect="auto" uses cos(latitude°) on geographic CRS; if you plot projected metres
+        # without reprojecting (or CRS/geometry disagree), y is wrong and you get ValueError: aspect must be finite and positive.
         tiles_plot = tiles_metrics.to_crs("EPSG:4326")
         del tiles_metrics
         bounds = tiles_plot.total_bounds
@@ -300,9 +272,7 @@ def plot_iou_per_building_sizes(
             plt.close(fig)
         del size_stats
 
-
-# ── Raster output ─────────────────────────────────────────────────────────────
-
+# raster output 
 def summarize_raster_city(city: str, metrics_tiles: pd.DataFrame) -> pd.DataFrame:
     """Aggregate tile-level raster metrics into one summary row per dataset."""
     rows = []
@@ -365,8 +335,8 @@ def plot_raster_tile_f1_boxplot(
     """Box plot of per-tile raster F1, one box per dataset."""
     fig, ax = plt.subplots(figsize=(10, 4))
     sns.boxplot(
-        data=metrics_tiles, x="dataset", y="f1", ax=ax,
-        palette="Set2", linewidth=0.8,
+        data=metrics_tiles, x="dataset", y="f1", hue="dataset", ax=ax,
+        palette="Set2", linewidth=0.8, legend=False,
         flierprops=dict(marker="o", markersize=3, alpha=0.4),
     )
     ax.set_title(f"Raster tile-level F1 scores — {city}", fontsize=13, fontweight="bold")
@@ -390,8 +360,8 @@ def plot_raster_rel_area_error_boxplot(
     """Box plot of per-tile relative area error, one box per dataset."""
     fig, ax = plt.subplots(figsize=(10, 4))
     sns.boxplot(
-        data=metrics_tiles, x="dataset", y="rel_area_error", ax=ax,
-        palette="Set2", linewidth=0.8,
+        data=metrics_tiles, x="dataset", y="rel_area_error", hue="dataset", ax=ax,
+        palette="Set2", linewidth=0.8, legend=False,
         flierprops=dict(marker="o", markersize=3, alpha=0.4),
     )
     ax.axhline(0, linestyle="--", linewidth=1, color="grey")
@@ -403,3 +373,14 @@ def plot_raster_rel_area_error_boxplot(
     fig.tight_layout()
     save_figure(fig, figures_dir, fig_name(city, "raster_tile_rel_area_error_boxplot", fmt), dpi=dpi)
     plt.close(fig)
+
+
+def purge_matplotlib() -> None:
+    """Release all open matplotlib figures and run gc."""
+    plt.close("all")
+    if Gcf is not None:
+        try:
+            Gcf.destroy_all()
+        except Exception:
+            pass
+    gc.collect()

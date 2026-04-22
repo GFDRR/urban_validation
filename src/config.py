@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 import yaml
 
+
 @dataclass
 class AOIConfig:
     path: str
@@ -9,10 +10,11 @@ class AOIConfig:
     crs_out: str = "EPSG:4326"
     layer: Optional[str] = None
     buffer_meters: float = 0.0
-    base_dir: str = ""      
+    base_dir: str = ""
     filter_suitable: bool = True
     aoi_subdir: str = "aoi"
     high_quality_only: bool = False
+
 
 @dataclass
 class OutputConfig:
@@ -20,31 +22,36 @@ class OutputConfig:
     overwrite: bool = False
     use_base_dir_for_output: bool = True
 
+
 @dataclass
 class OvertureConfig:
-    enabled: bool = False 
+    enabled: bool = False
     provider: str = "aws"
     release: str = "latest"
     theme: str = "buildings"
     types: List[str] = None
     s3_region: str = "us-west-2"
     s3_url: str = "s3://overturemaps-us-west-2/release/"
+
     def __post_init__(self):
         object.__setattr__(self, "types", self.types or [])
 
+
 @dataclass
 class GBAConfig:
-    enabled: bool = False    
+    enabled: bool = False
     s3_url: str = ""
     s3_region: str = "us-west-2"
     country_iso: str = ""
     out_name: str = "gba_lod1.parquet"
 
+
 @dataclass
 class GloBFPConfig:
     enabled: bool = False
-    local_dir: str = "data/globfp_cache"   # where world_grid + tiles are cached
-    zenodo_record: int = 15487006           # Zenodo record ID for world_grid.zip
+    local_dir: str = "data/globfp_cache"
+    zenodo_record: int = 15487006
+
 
 @dataclass
 class GoogleOBTConfig:
@@ -54,6 +61,7 @@ class GoogleOBTConfig:
     bands: List[str] = field(default_factory=lambda: ["building_presence", "building_height", "building_fractional_count"])
     scale: int = 4
 
+
 @dataclass
 class MicrosoftTempoConfig:
     enabled: bool = True
@@ -62,12 +70,14 @@ class MicrosoftTempoConfig:
     tile_cache_dir: str = "data/cache/tempo_tiles"
     make_mosaic: bool = True
 
+
 @dataclass
 class GHSLProductConfig:
     ee_id: str = ""
     band: str = ""
     scale: int = 100
     years: List[int] = field(default_factory=list)
+
 
 @dataclass
 class GHSLConfig:
@@ -93,11 +103,28 @@ class GHSLConfig:
         )
     })
 
+
+@dataclass
+class WSFTrackerConfig:
+    enabled: bool = False
+    drive_root: str = ""           
+    tif_glob: str = "*.tif"
+    make_mosaic: bool = True
+    keep_tile_copies: bool = False
+    output_prefix: str = "wsf_tracker"
+    first_timestamp: str = "2016-07-01"
+    interval_months: int = 6
+    nodata: int = 0
+    tile_degree_size: int = 2         # filenames suggest 2° x 2° tiles
+
+
 @dataclass
 class DatasetsConfig:
     google_open_buildings_temporal: GoogleOBTConfig = field(default_factory=GoogleOBTConfig)
     microsoft_tempo: MicrosoftTempoConfig = field(default_factory=MicrosoftTempoConfig)
     ghsl: GHSLConfig = field(default_factory=GHSLConfig)
+    wsf_tracker: WSFTrackerConfig = field(default_factory=WSFTrackerConfig)
+
 
 @dataclass
 class UrbanConfig:
@@ -115,7 +142,7 @@ def load_config(path: str) -> UrbanConfig:
         raw = yaml.safe_load(f)
 
     raw_datasets = raw.get("datasets", {})
-    raw_ghsl     = raw_datasets.get("ghsl", {})
+    raw_ghsl = raw_datasets.get("ghsl", {})
 
     ghsl_products = {
         name: GHSLProductConfig(**prod)
@@ -139,6 +166,9 @@ def load_config(path: str) -> UrbanConfig:
             ghsl=GHSLConfig(
                 enabled=raw_ghsl.get("enabled", True),
                 products=ghsl_products or GHSLConfig().products,
+            ),
+            wsf_tracker=WSFTrackerConfig(
+                **raw_datasets.get("wsf_tracker", {})
             ),
         ),
     )

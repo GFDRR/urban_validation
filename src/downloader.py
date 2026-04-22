@@ -14,6 +14,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import tempfile
 import zipfile
@@ -56,6 +57,10 @@ logging.basicConfig(
 log = logging.getLogger("UrbanDownloader")
 
 OVERTURE_STAC_ROOT = "https://stac.overturemaps.org/catalog.json"
+
+WSF_TRACKER_REGEX = re.compile(
+    r"WSFtracker_(\d{8})[-_](\d{8})_(-?\d+)_(-?\d+)\.tif$"
+)
 
 
 class UrbanDownloader:
@@ -129,8 +134,10 @@ class UrbanDownloader:
             "google_open_buildings_temporal": cfg.datasets.google_open_buildings_temporal,
             "microsoft_tempo": cfg.datasets.microsoft_tempo,
             "ghsl": cfg.datasets.ghsl,
+            "wsf_tracker": cfg.datasets.wsf_tracker,
         }
         enabled = {name: source_cfg.enabled for name, source_cfg in sources.items()}
+        
         if not any(enabled.values()):
             raise ValueError(
                 "No raster source enabled in config. "
@@ -146,6 +153,7 @@ class UrbanDownloader:
             "google_open_buildings_temporal": self._run_obt,
             "microsoft_tempo": self._run_tempo,
             "ghsl": self._run_ghsl,
+            "wsf_tracker": self._run_wsf_tracker,
         }
 
         all_outputs: Dict[str, List[str]] = {}
@@ -406,7 +414,141 @@ class UrbanDownloader:
                 tile_width_deg=tile_width_deg,
                 tile_height_deg=tile_height_deg,
             )
+        
+    def _parse_wsf_tracker_filename(self, tif_path: Path, tile_degree_size: int = 2, pad_deg: float = 0.011):
+        """
+        Parse:
+        WSFtracker_<start>-<end>_<lon>_<lat>.tif
 
+        Verified from sample rasters:
+        - lon/lat correspond to the nominal lower-left corner
+        - tiles are nominally 2° x 2°
+        - actual bounds are padded by about 0.01° on all sides
+        """
+        m = WSF_TRACKER_REGEX.match(tif_path.name)
+        if not m:
+            return None
+
+        start, end, lon, lat = m.groups()
+        lon = int(lon)
+        lat = int(lat)
+
+        geom = box(
+            lon - pad_deg,
+            lat - pad_deg,
+            lon + tile_degree_size + pad_deg,
+            lat + tile_degree_size + pad_deg,
+        )
+
+        return {
+            "start": start,
+            "end": end,
+            "lon": lon,
+            "lat": lat,
+            "geometry": geom,
+        }
+
+    def _index_wsf_tracker_tiles(self, drive_root: Path, tile_degree_size: int = 2) -> gpd.GeoDataFrame:
+        """
+        Fast index of WSF Tracker tiles using filename parsing only.
+        Assumes filenames follow:
+          WSFtracker_<start>_<end>_<lon>_<lat>.tif
+        """
+        records = []
+
+        for tif in drive_root.rglob("*.tif"):
+            parsed = self._parse_wsf_tracker_filename(tif, tile_degree_size=tile_degree_size)
+            if parsed is None:
+                continue
+
+            records.append(
+                {
+                    "path": str(tif),
+                    "name": tif.name,
+                    "start": parsed["start"],
+                    "end": parsed["end"],
+                    "lon": parsed["lon"],
+                    "lat": parsed["lat"],
+                    "geometry": parsed["geometry"],
+                }
+            )
+
+        if not records:
+            return gpd.GeoDataFrame(
+                columns=["path", "name", "start", "end", "lon", "lat", "geometry"],
+                geometry="geometry",
+                crs="EPSG:4326",
+            )
+
+        return gpd.GeoDataFrame(records, geometry="geometry", crs="EPSG:4326")
+
+    def _mosaic_and_clip_wsf_tracker(
+        self,
+        selected: gpd.GeoDataFrame,
+        ds: dict,
+        out_path: Path,
+        nodata: int = 0,
+    ) -> Path:
+        """
+        Mosaic selected WSF Tracker tiles and clip to AOI or sub-AOIs.
+        """
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        readers = [rasterio.open(p) for p in selected["path"].tolist()]
+        try:
+            mosaic, transform = rio_merge(readers, nodata=nodata)
+            meta = readers[0].meta.copy()
+            meta.update(
+                driver="GTiff",
+                height=mosaic.shape[1],
+                width=mosaic.shape[2],
+                transform=transform,
+                nodata=nodata,
+            )
+        finally:
+            for r in readers:
+                r.close()
+
+        temp_path = out_path.parent / f"_{out_path.stem}_temp.tif"
+        with rasterio.open(temp_path, "w", **meta) as dst:
+            dst.write(mosaic)
+
+        aoi_union = ds["aoi"].to_crs("EPSG:4326").union_all()
+        sub_aois = ds.get("sub_aois", [])
+
+        if ds.get("is_multi_aoi") and sub_aois:
+            clip_shapes = [mapping(s["geometry"]) for s in sub_aois]
+        else:
+            clip_shapes = [mapping(aoi_union)]
+
+        try:
+            with rasterio.open(temp_path) as src:
+                clipped, tf = rio_mask(
+                    src,
+                    clip_shapes,
+                    crop=True,
+                    nodata=nodata,
+                    all_touched=True,
+                )
+                clipped_meta = src.meta.copy()
+                clipped_meta.update(
+                    height=clipped.shape[1],
+                    width=clipped.shape[2],
+                    transform=tf,
+                    nodata=nodata,
+                )
+
+            with rasterio.open(out_path, "w", **clipped_meta) as dst:
+                dst.write(clipped)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+        log.info("[WSF Tracker] %s — saved %s", ds["id"], out_path)
+        return out_path
+
+
+    
     # ─────────────────────────────────────────────────────────────────
     # INTERNALS — Vector runners
     # ─────────────────────────────────────────────────────────────────
@@ -816,5 +958,68 @@ class UrbanDownloader:
                         exc,
                         exc_info=True,
                     )
+
+        return outputs
+    
+    def _run_wsf_tracker(self, ds: dict, out_root: Path, cfg) -> List[str]:
+        """
+        Select WSF Tracker tiles intersecting the AOI and either:
+          - copy them individually into the raster folder, or
+          - mosaic them into one clipped product
+        """
+        drive_root = Path(cfg.drive_root)
+        if not drive_root.exists():
+            raise FileNotFoundError(f"WSF Tracker drive_root does not exist: {drive_root}")
+
+        aoi_4326 = ds["aoi"].to_crs("EPSG:4326")
+        aoi_union = aoi_4326.union_all()
+
+        tile_index = self._index_wsf_tracker_tiles(
+            drive_root=drive_root,
+            tile_degree_size=cfg.tile_degree_size,
+        )
+
+        if tile_index.empty:
+            log.warning("[WSF Tracker] %s — no TIFFs found under %s", ds["id"], drive_root)
+            return []
+
+        selected = tile_index[tile_index.intersects(aoi_union)].copy().reset_index(drop=True)
+        log.info("[WSF Tracker] %s — %d tile(s) intersect AOI.", ds["id"], len(selected))
+
+        if selected.empty:
+            return []
+
+        outputs: List[str] = []
+        out_root.mkdir(parents=True, exist_ok=True)
+
+        selected.to_file(
+            out_root / f"{ds['slug']}_{cfg.output_prefix}_tile_footprints.geojson",
+            driver="GeoJSON",
+        )
+
+        if cfg.keep_tile_copies:
+            tile_dir = out_root / f"{cfg.output_prefix}_tiles"
+            tile_dir.mkdir(parents=True, exist_ok=True)
+
+            for _, row in selected.iterrows():
+                src = Path(row["path"])
+                dst = tile_dir / src.name
+                if not dst.exists() or self.overwrite:
+                    shutil.copy2(src, dst)
+                outputs.append(str(dst))
+
+        if cfg.make_mosaic:
+            mosaic_path = out_root / f"{ds['slug']}_{cfg.output_prefix}.tif"
+            if mosaic_path.exists() and not self.overwrite:
+                log.info("[WSF Tracker] %s — mosaic exists, skipping.", ds["id"])
+                outputs.append(str(mosaic_path))
+            else:
+                self._mosaic_and_clip_wsf_tracker(
+                    selected=selected,
+                    ds=ds,
+                    out_path=mosaic_path,
+                    nodata=cfg.nodata,
+                )
+                outputs.append(str(mosaic_path))
 
         return outputs

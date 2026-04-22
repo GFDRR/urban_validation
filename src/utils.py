@@ -583,56 +583,112 @@ def build_sub_aoi_gdf(sub_aois: List[Dict], crs: str = "EPSG:4326") -> gpd.GeoDa
         crs=crs,
     )
 
-
 def tag_buildings_with_sub_aoi(
-    buildings: gpd.GeoDataFrame,
-    sub_aois: List[Dict],
-    *,
-    crs: str = "EPSG:4326",
+    buildings_gdf: gpd.GeoDataFrame,
+    sub_aois: list,
 ) -> gpd.GeoDataFrame:
-    """Spatial-join buildings with sub-AOI polygons to add a `sub_aoi_id` column.
-
-    Buildings that don't fall within any sub-AOI are dropped (these are artefacts
-    from the dissolved-union bounding-box query that fall in the gaps).
-
-    For single-AOI datasets this is a no-op identity (all buildings match).
     """
-    if len(sub_aois) <= 1:
-        # Single AOI — just add the column directly
-        buildings = buildings.copy()
-        buildings["sub_aoi_id"] = sub_aois[0]["sub_aoi_id"] if sub_aois else ""
-        return buildings
+    Spatially tag each building with the sub-AOI it falls in.
 
-    sub_gdf = build_sub_aoi_gdf(sub_aois, crs=crs)
+    Returns a GeoDataFrame with:
+      - all original building columns
+      - geometry
+      - exactly one `sub_aoi_id` column
 
-    # Ensure both are in the same CRS
-    if str(buildings.crs) != crs:
-        bld = buildings.to_crs(crs)
-    else:
-        bld = buildings
+    It will not leak join artifact columns such as:
+      - index_left
+      - index_right
+      - sub_aoi_id_left
+      - sub_aoi_id_right
 
+    For multi-AOI datasets, buildings falling in gaps between sub-AOIs are dropped.
+    """
+
+    if buildings_gdf is None or buildings_gdf.empty:
+        out = buildings_gdf.copy()
+        if "sub_aoi_id" not in out.columns:
+            out["sub_aoi_id"] = pd.Series(dtype="object")
+        return out
+
+    if not sub_aois:
+        out = buildings_gdf.copy()
+        if "sub_aoi_id" not in out.columns:
+            out["sub_aoi_id"] = pd.Series([None] * len(out), index=out.index, dtype="object")
+        return out
+
+    gdf = buildings_gdf.copy()
+
+    # Remove any previous join-artifact columns so repeated calls stay clean
+    artifact_cols = [
+        c for c in gdf.columns
+        if c in {"index_left", "index_right", "sub_aoi_id_left", "sub_aoi_id_right"}
+        or c.startswith("sub_aoi_id_")
+    ]
+    if artifact_cols:
+        gdf = gdf.drop(columns=artifact_cols, errors="ignore")
+
+    # Also remove duplicate column names before joining
+    if gdf.columns.duplicated().any():
+        gdf = gdf.loc[:, ~gdf.columns.duplicated()].copy()
+
+    # Preserve original column order
+    original_cols = list(gdf.columns)
+
+    # Build sub-AOI GeoDataFrame
+    sub_aoi_gdf = gpd.GeoDataFrame(
+        [
+            {
+                "sub_aoi_id": s["sub_aoi_id"],
+                "geometry": s["geometry"],
+            }
+            for s in sub_aois
+        ],
+        geometry="geometry",
+        crs=gdf.crs,
+    )
+
+    if sub_aoi_gdf.crs != gdf.crs:
+        sub_aoi_gdf = sub_aoi_gdf.to_crs(gdf.crs)
+
+    # Spatial join: keep only buildings that intersect a sub-AOI
     joined = gpd.sjoin(
-        bld,
-        sub_gdf[["sub_aoi_id", "geometry"]],
+        gdf,
+        sub_aoi_gdf[["sub_aoi_id", "geometry"]],
         how="inner",
         predicate="intersects",
     )
 
-    # Drop the sjoin index column and deduplicate (a building on the border
-    # of two sub-AOIs will appear twice — keep first match)
+    # Clean up join artifacts
     joined = joined.drop(columns=["index_right"], errors="ignore")
-    joined = joined[~joined.index.duplicated(keep="first")]
 
-    # Restore original CRS if we reprojected
-    if str(buildings.crs) != crs:
-        joined = joined.to_crs(buildings.crs)
+    # Normalize sub_aoi_id to exactly one column
+    if "sub_aoi_id_right" in joined.columns:
+        joined = joined.rename(columns={"sub_aoi_id_right": "sub_aoi_id"})
+    elif "sub_aoi_id_left" in joined.columns and "sub_aoi_id" not in joined.columns:
+        joined = joined.rename(columns={"sub_aoi_id_left": "sub_aoi_id"})
 
-    log.info(
-        "Tagged buildings: %d total, %d matched sub-AOIs, %d dropped (in gaps)",
-        len(buildings), len(joined), len(buildings) - len(joined),
+    joined = joined.drop(columns=["sub_aoi_id_left", "sub_aoi_id_right"], errors="ignore")
+
+    # Remove duplicate column names if any remain
+    if joined.columns.duplicated().any():
+        joined = joined.loc[:, ~joined.columns.duplicated()].copy()
+
+    # Keep exactly original columns + one sub_aoi_id
+    final_cols = [c for c in original_cols if c in joined.columns and c != "sub_aoi_id"]
+    final_cols += ["sub_aoi_id"]
+
+    joined = joined[final_cols].copy()
+
+    # Re-wrap as GeoDataFrame to preserve geometry metadata
+    joined = gpd.GeoDataFrame(joined, geometry="geometry", crs=gdf.crs)
+
+    # Optional logging
+    dropped = len(gdf) - len(joined)
+    print(
+        f"Tagged buildings: {len(gdf)} total, {len(joined)} matched sub-AOIs, {dropped} dropped (in gaps)"
     )
-    return joined.reset_index(drop=True)
 
+    return joined
 
 # ─────────────────────────────────────────────────────────────────────
 #  NEW: mask raster to sub-AOI geometries
@@ -838,16 +894,60 @@ def get_projected_crs(gdf: gpd.GeoDataFrame) -> str:
     zone_number = int((lon + 180) / 6) + 1
     return f"EPSG:{32600 + zone_number}" if lat >= 0 else f"EPSG:{32700 + zone_number}"
 
-def init_earth_engine(project: str = "") -> None:
+def init_earth_engine(project: str | None = None) -> None:
+    """
+    Initialize Earth Engine.
+
+    Behavior:
+    - First try existing credentials.
+    - If unavailable and running in an interactive notebook kernel, prompt auth.
+    - If unavailable and running as a plain script, raise a helpful error instead
+      of crashing inside Colab widget auth.
+    """
     import ee
-    kwargs = {"project": project} if project else {}
+
+    def _in_ipython_kernel() -> bool:
+        try:
+            from IPython import get_ipython
+            ip = get_ipython()
+            return ip is not None and getattr(ip, "kernel", None) is not None
+        except Exception:
+            return False
+
+    kwargs = {}
+    if project:
+        kwargs["project"] = project
+
     try:
         ee.Initialize(**kwargs)
-        print("Earth Engine initialised.")
-    except Exception:
-        print("EE not initialised – authenticating …")
-        ee.Authenticate()
-        ee.Initialize(**kwargs)
+        print("EE already initialized.")
+        return
+
+    except Exception as e:
+        print("EE not initialised – attempting authentication …")
+
+        # Only do interactive auth when a real notebook kernel exists
+        if _in_ipython_kernel():
+            ee.Authenticate()
+            ee.Initialize(**kwargs)
+            print("EE authenticated and initialized.")
+            return
+
+        raise RuntimeError(
+            "Earth Engine credentials are not available for this script run.\n\n"
+            "Authenticate first in an interactive environment, then rerun.\n"
+            "Options:\n"
+            "  1. In a notebook cell, run:\n"
+            "       import ee\n"
+            "       ee.Authenticate()\n"
+            "       ee.Initialize(project={!r})\n"
+            "  2. Or in a shell, run:\n"
+            "       earthengine authenticate\n\n"
+            "After that, rerun:\n"
+            "  python main.py --data-config configs/data_configs.yaml "
+            "--val-config configs/validation_configs.yaml --skip-vector"
+            .format(project)
+        ) from e
 
 def _shapely_to_geojson_dict(geom) -> dict:
     return json.loads(
@@ -901,3 +1001,31 @@ def reproject_to_4326(src_path: Path, dst_path: Path) -> None:
                     dst_crs="EPSG:4326",
                     resampling=Resampling.bilinear,
                 )
+
+
+def consolidate_match_chunks(
+    metrics_dir: Path, ds_name: str, final_path: Path
+) -> None:
+    """Read all temp match chunks for ds_name, concat, write final file, delete temps."""
+    chunk_files = sorted(metrics_dir.glob(f"_tmp_matches_{ds_name}_*.parquet"))
+    if chunk_files:
+        df = pd.concat([pd.read_parquet(f) for f in chunk_files], ignore_index=True)
+        df.to_parquet(final_path, index=False)
+        del df
+        for f in chunk_files:
+            f.unlink()
+    else:
+        pd.DataFrame(columns=[
+            "ref_id", "cand_id", "iou", "area_ref", "area_cand",
+            "rel_area_error", "city", "dataset", "tile_id",
+        ]).to_parquet(final_path, index=False)
+
+
+def log_memory(label: str = "") -> None:
+    """Log current process RSS — useful for spotting memory leaks."""
+    try:
+        import psutil
+        rss_mb = psutil.Process().memory_info().rss / 1024 ** 2
+        log.info("MEM [%s] RSS = %.0f MB", label, rss_mb)
+    except Exception:
+        pass
