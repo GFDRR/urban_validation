@@ -39,6 +39,19 @@ raster:
     tau_frac: 0.2
     oversample_factor: 4
     all_touched: false
+    
+    evaluation_grids:
+      - name: "10m"
+        resolution: 10
+      - name: "30m"
+        resolution: 30
+      - name: "100m"
+        resolution: 100
+
+    native_resolution_guard:
+      enabled: true
+      mode: "skip_finer"   # one of: skip_finer, error, warn_only
+      tolerance_factor: 0.75
 
   datasets:
     - name: obt
