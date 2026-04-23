@@ -19,14 +19,16 @@ import geopandas as gpd
 import shapely
 from shapely.geometry import box
 import duckdb
+
 import rasterio
 from rasterio import features as rio_features
 from rasterio.transform import Affine
 from rasterio.vrt import WarpedVRT
-from rasterio.warp import Resampling
+from rasterio.warp import reproject, Resampling
 from rasterio.windows import from_bounds, Window
 from rasterio.windows import intersection as win_intersection
 import rasterio.windows as riowin
+from src.utils import subset_by_tile
 
 logger = logging.getLogger("Validation_Metrics")
 logger.setLevel(logging.INFO)
@@ -102,6 +104,67 @@ def compute_boundary_f_for_tile(ref_tile, cand_tile, matches_df, tau_boundary_m)
 def _safe_quantile(s: pd.Series, q: float) -> float:
     return float(s.quantile(q)) if len(s) else 0.0
 
+
+def _compute_quantity_allocation_disagreement(
+    ref_bin: np.ndarray,
+    pred_bin: np.ndarray,
+    valid: np.ndarray,
+) -> tuple[float, float]:
+    """
+    Pontius-style quantity and allocation disagreement in fractions of valid pixels.
+    """
+    ref_v = ref_bin[valid].astype(np.uint8)
+    pred_v = pred_bin[valid].astype(np.uint8)
+
+    n = len(ref_v)
+    if n == 0:
+        return np.nan, np.nan
+
+    tp = np.sum((ref_v == 1) & (pred_v == 1))
+    tn = np.sum((ref_v == 0) & (pred_v == 0))
+    fp = np.sum((ref_v == 0) & (pred_v == 1))
+    fn = np.sum((ref_v == 1) & (pred_v == 0))
+
+    # for binary maps
+    quantity = abs(fp - fn) / n
+    allocation = 2.0 * min(fp, fn) / n
+    return float(quantity), float(allocation)
+
+def _read_reprojected_tile(
+    src,
+    band: int,
+    dst_shape: tuple,
+    dst_transform: Affine,
+    dst_crs,
+    *,
+    binarize_spec: dict,
+    fill_value: float,
+) -> np.ndarray:
+    """
+    Reproject a raster band into a destination array defined by
+    (dst_shape, dst_transform, dst_crs).
+
+    This avoids boundless reads on WarpedVRT and cleanly fills pixels outside
+    source extent with fill_value.
+    """
+    dst = np.full(dst_shape, fill_value, dtype="float32")
+
+    src_nodata = src.nodata
+    if "nodata" in binarize_spec:
+        src_nodata = binarize_spec["nodata"]
+
+    reproject(
+        source=rasterio.band(src, band),
+        destination=dst,
+        src_transform=src.transform,
+        src_crs=src.crs,
+        src_nodata=src_nodata,
+        dst_transform=dst_transform,
+        dst_crs=dst_crs,
+        dst_nodata=fill_value,
+        resampling=_choose_resampling(binarize_spec),
+    )
+    return dst
 
 def compute_tile_metrics(ref_tile, city, cand_tile, tau_overlap, tau_buffer_m, tau_boundary_m, tile_id, dataset_name):
     matches_df, ref_unmatched, cand_unmatched = match_buildings_iou(
@@ -197,17 +260,6 @@ def match_buildings_iou(
 ):
     """
     Vectorised 1-to-1 IoU matching with CHUNKED processing.
-
-    MEMORY FIX: The original version materialised all geometry arrays at once.
-    For dense tiles (e.g. 20k ref × 30k cand) the sjoin output, buffered
-    copies, intersection arrays, and union arrays can easily exceed 4-8 GB.
-
-    This version:
-      a) Chunks the candidate GeoDataFrame before sjoin so each chunk's
-         intermediate arrays stay bounded (~50k pairs max per chunk).
-      b) Deletes intermediate numpy/shapely arrays as soon as IoU is computed.
-      c) Concatenates only the lightweight (ref_id, cand_id, iou) triples
-         before the greedy matching pass.
     """
     empty_cols = ["ref_id", "cand_id", "iou", "area_ref", "area_cand", "rel_area_error"]
 
@@ -492,151 +544,416 @@ def compute_raster_tile_metrics(
     tau_frac: float,
     default_oversample: int = 4,
     default_all_touched: bool = False,
+    evaluation_grids: Optional[List[dict]] = None,
+    native_guard_cfg: Optional[dict] = None,
 ) -> pd.DataFrame:
-    """Tile-level raster validation for one candidate dataset.
-
-    For each tile:
-      1. Read the candidate raster window.
-      2. Rasterize reference polygons onto the candidate grid (fractional coverage).
-      3. Compute binary & area-based accuracy metrics.
-
-    Returns a DataFrame with one row per evaluated tile.
     """
-    bin_spec    = cand_cfg.get("binarize", {"method": "fraction"})
-    rast_over   = cand_cfg.get("rasterization", {}) or {}
-    oversample  = int(rast_over.get("oversample_factor", default_oversample))
-    all_touched = bool(rast_over.get("all_touched", default_all_touched))
-    band        = int(bin_spec.get("band", 1))
+    Tile-level raster validation for one candidate dataset, evaluated at one or more
+    target grid resolutions.
 
+    For each tile and for each evaluation grid:
+      1. Read/reproject candidate raster onto the target grid.
+      2. Rasterize reference polygons onto the same target grid.
+      3. Compute binary and area-based metrics.
+
+    Returns one row per (tile, grid).
+    """
+    bin_spec = cand_cfg.get("binarize", {"method": "fraction"})
+    rast_over = cand_cfg.get("rasterization", {}) or {}
+
+    base_oversample = int(rast_over.get("oversample_factor", default_oversample))
+    base_all_touched = bool(rast_over.get("all_touched", default_all_touched))
+    band = int(bin_spec.get("band", 1))
+
+    fallback_resolution = cand_cfg.get("native_resolution_m", 10)
+
+    grids = _normalize_evaluation_grids(
+        evaluation_grids=evaluation_grids,
+        fallback_resolution=fallback_resolution,
+    )
+
+    grids = _filter_evaluation_grids_by_native_resolution(
+        evaluation_grids=grids,
+        cand_cfg=cand_cfg,
+        guard_cfg=native_guard_cfg,
+    )
+
+    if not grids:
+        logger.warning(
+            "[raster tile metrics] No evaluation grids remain after native-resolution "
+            "guard for dataset '%s'. Returning empty metrics.",
+            cand_cfg.get("name", "<unknown>"),
+        )
+        return pd.DataFrame()
+    
     rows: List[dict] = []
 
     with rasterio.open(raster_path) as _src:
         ds = _open_raster_in_crs(_src, str(tiles.crs), bin_spec)
-
-        # nodata = bin_spec["nodata"] if "nodata" in bin_spec else ds.nodata
         nodata = bin_spec.get("nodata", None)
 
         for tile_row in tiles.itertuples():
-            tile_id  = int(tile_row.tile_id)
-            geom     = tile_row.geometry
-            minx, miny, maxx, maxy = geom.bounds
+            tile_id = int(tile_row.tile_id)
+            geom = tile_row.geometry
 
-            try:
-                win = from_bounds(minx, miny, maxx, maxy, transform=ds.transform)
-                if win.width <= 0 or win.height <= 0:
-                    continue
+            # Subset reference once per tile, reuse across all evaluation grids
+            ref_tile = subset_by_tile(ref_all, ref_sindex, geom)
+            ref_geoms = list(ref_tile.geometry.values) if not ref_tile.empty else []
 
-                out_shape  = (int(round(win.height)), int(round(win.width)))
-                # fill       = float(nodata) if nodata is not None else 0.0
-                fill = float(nodata) if nodata is not None else np.nan
-                arr        = _read_window_padded(ds, band, win, out_shape, fill_value=fill)
-                transform  = riowin.transform(win, ds.transform)
+            for grid in grids:
+                grid_name = str(grid["name"])
+                resolution = float(grid["resolution"])
+                oversample = int(
+                    grid["oversample_factor"]
+                    if grid.get("oversample_factor", None) is not None
+                    else base_oversample
+                )
+                all_touched = bool(
+                    grid["all_touched"]
+                    if grid.get("all_touched", None) is not None
+                    else base_all_touched
+                )
+
+                transform, out_shape = _make_grid_aligned_transform(geom.bounds, resolution)
                 pixel_area = _pixel_area_from_transform(transform)
 
-                # Valid pixels: inside AOI and not nodata
-                aoi_mask = _aoi_mask_for_window(aoi_union, arr.shape, transform,
-                                                all_touched=all_touched)
-                valid = aoi_mask.copy()
-                method = bin_spec.get("method", "")
+                fill = float(nodata) if nodata is not None else np.nan
 
-                if nodata is not None:
-                    if method in {"fraction", "percent", "area_m2"}:
-                        # Do NOT mask zeros — they are valid
-                        valid &= np.isfinite(arr)
+                try:
+                    arr = _read_reprojected_tile(
+                        src=ds,
+                        band=band,
+                        dst_shape=out_shape,
+                        dst_transform=transform,
+                        dst_crs=tiles.crs,
+                        binarize_spec=bin_spec,
+                        fill_value=fill,
+                    )
+
+                    aoi_mask = _aoi_mask_for_window(
+                        aoi_union,
+                        arr.shape,
+                        transform,
+                        all_touched=all_touched,
+                    )
+                    tile_mask = _aoi_mask_for_window(
+                        geom,
+                        arr.shape,
+                        transform,
+                        all_touched=all_touched,
+                    )
+
+                    valid = aoi_mask & tile_mask
+                    method = bin_spec.get("method", "")
+
+                    if nodata is not None:
+                        if method in {"fraction", "percent", "area_m2"}:
+                            valid &= np.isfinite(arr)
+                        else:
+                            valid &= (arr != nodata)
                     else:
-                        valid &= (arr != nodata)
+                        valid &= np.isfinite(arr)
 
-                n_valid = int(valid.sum())
-                if n_valid == 0:
-                    rows.append(_empty_raster_tile_row(tile_id, pixel_area))
-                    continue
+                    n_valid = int(valid.sum())
+                    
+                    if n_valid == 0:
+                        rows.append(
+                            _empty_raster_tile_row(
+                                tile_id,
+                                pixel_area,
+                                grid_name=grid_name,
+                                resolution=resolution,
+                            )
+                        )
+                        continue
 
-                # Prediction
-                A_pred   = predicted_area_from_raster(arr, transform, bin_spec)
-                pred_bin = pred_bin_from_pred_area(A_pred, transform, bin_spec, tau_frac)
+                    ref_frac = _rasterize_ref_fraction(
+                        ref_geoms,
+                        out_shape=arr.shape,
+                        transform=transform,
+                        oversample=oversample,
+                        all_touched=all_touched,
+                    )
+                    ref_bin = ref_frac >= tau_frac
 
-                # Reference rasterization
-                possible  = list(ref_sindex.intersection(geom.bounds))
-                ref_tile  = ref_all.iloc[possible]
-                ref_tile  = ref_tile[ref_tile.intersects(geom)]
-                ref_geoms = list(ref_tile.geometry)
+                    A_ref = ref_frac * pixel_area
+                    A_pred = predicted_area_from_raster(arr, transform, bin_spec)
+                    pred_bin = pred_bin_from_pred_area(A_pred, transform, bin_spec, tau_frac)
 
-                f_ref    = _rasterize_ref_fraction(ref_geoms, arr.shape, transform,
-                                                   oversample=oversample, all_touched=all_touched)
-                A_ref    = f_ref * pixel_area
-                ref_bin  = (f_ref >= tau_frac)
+                    tp = int(np.sum(valid & ref_bin & pred_bin))
+                    fp = int(np.sum(valid & (~ref_bin) & pred_bin))
+                    fn = int(np.sum(valid & ref_bin & (~pred_bin)))
+                    tn = int(np.sum(valid & (~ref_bin) & (~pred_bin)))
 
-                # Confusion matrix on valid pixels
-                p  = pred_bin[valid]
-                r  = ref_bin[valid]
-                tp = int(np.logical_and(p, r).sum())
-                fp = int(np.logical_and(p, ~r).sum())
-                fn = int(np.logical_and(~p, r).sum())
+                    precision = tp / (tp + fp) if (tp + fp) > 0 else np.nan
+                    recall = tp / (tp + fn) if (tp + fn) > 0 else np.nan
+                    f1 = (
+                        2.0 * precision * recall / (precision + recall)
+                        if np.isfinite(precision) and np.isfinite(recall) and (precision + recall) > 0
+                        else np.nan
+                    )
 
-                precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-                recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-                f1        = (2 * precision * recall / (precision + recall)
-                             if (precision + recall) > 0 else 0.0)
+                    ref_area_m2 = float(np.sum(A_ref[valid]))
+                    pred_area_m2 = float(np.sum(A_pred[valid]))
+                    valid_area_m2 = float(n_valid * pixel_area)
 
-                # Area-based metrics
-                area_ref  = float(A_ref[valid].sum())
-                area_pred = float(A_pred[valid].sum())
-                rel_err   = abs(area_pred - area_ref) / area_ref if area_ref > 0 else np.nan
-                bias      = area_pred - area_ref
+                    rel_area_error = (
+                        (pred_area_m2 - ref_area_m2) / ref_area_m2
+                        if ref_area_m2 > 0
+                        else np.nan
+                    )
+                    signed_area_bias = rel_area_error
 
-                # Pontius-style disagreement (binary)
-                n_pred = int(p.sum())
-                n_ref  = int(r.sum())
-                qd     = abs(n_pred - n_ref) / n_valid
-                ad     = (2 * min(fp, fn)) / n_valid
+                    qd, ad = _compute_quantity_allocation_disagreement(ref_bin, pred_bin, valid)
 
-                rows.append({
-                    "tile_id":                 tile_id,
-                    "tp":                      tp,
-                    "fp":                      fp,
-                    "fn":                      fn,
-                    "precision":               precision,
-                    "recall":                  recall,
-                    "f1":                      f1,
-                    "quantity_disagreement":   float(qd),
-                    "allocation_disagreement": float(ad),
-                    "n_valid_pixels":          n_valid,
-                    "pixel_area_m2":           float(pixel_area),
-                    "valid_area_m2":           float(n_valid) * float(pixel_area),
-                    "area_ref_m2":             area_ref,
-                    "area_pred_m2":            area_pred,
-                    "rel_area_error":          rel_err,
-                    "signed_area_bias_m2":     bias,
-                })
+                    rows.append(
+                        {
+                            "tile_id": tile_id,
+                            "grid": grid_name,
+                            "resolution_m": resolution,
+                            "pixel_area_m2": float(pixel_area),
+                            "n_pixels": int(arr.size),
+                            "n_valid": n_valid,
+                            "valid_area_m2": valid_area_m2,
+                            "tp": tp,
+                            "fp": fp,
+                            "fn": fn,
+                            "tn": tn,
+                            "precision": precision,
+                            "recall": recall,
+                            "f1": f1,
+                            "ref_area_m2": ref_area_m2,
+                            "pred_area_m2": pred_area_m2,
+                            "rel_area_error": rel_area_error,
+                            "signed_area_bias": signed_area_bias,
+                            "quantity_disagreement": qd,
+                            "allocation_disagreement": ad,
+                            "native_resolution_m": float(cand_cfg["native_resolution_m"]) if cand_cfg.get("native_resolution_m") is not None else np.nan,
+                        }
+                    )
 
-                del arr, A_pred, pred_bin, f_ref, A_ref, ref_bin, aoi_mask, valid, p, r
+                    del arr, ref_frac, ref_bin, A_ref, A_pred, pred_bin, valid, aoi_mask, tile_mask
 
-            except Exception as exc:
-                logger.warning(
-                    "Tile %d skipped due to error: %s: %s",
-                    tile_id, type(exc).__name__, exc,
-                )
-                continue
+                except Exception as exc:
+                    logger.exception(
+                        "[raster tile metrics] tile=%s grid=%s resolution=%s failed: %s",
+                        tile_id,
+                        grid_name,
+                        resolution,
+                        exc,
+                    )
+                    rows.append(
+                        _empty_raster_tile_row(
+                            tile_id,
+                            pixel_area,
+                            grid_name=grid_name,
+                            resolution=resolution,
+                        )
+                    )
+
+            del ref_tile
+
+        if ds is not _src:
+            ds.close()
 
     return pd.DataFrame(rows)
 
+def _normalize_evaluation_grids(
+    evaluation_grids: Optional[List[dict]],
+    fallback_resolution: Optional[float] = None,
+) -> List[dict]:
+    """
+    Normalize user-provided evaluation grids.
 
-def _empty_raster_tile_row(tile_id: int, pixel_area: float) -> dict:
+    If evaluation_grids is missing, fall back to a single grid using
+    fallback_resolution. If that is also missing, default to 10 m.
+    """
+    if evaluation_grids:
+        out = []
+        for i, g in enumerate(evaluation_grids):
+            if "resolution" not in g:
+                raise ValueError(f"evaluation_grids[{i}] is missing 'resolution'")
+            res = float(g["resolution"])
+            if res <= 0:
+                raise ValueError(f"evaluation_grids[{i}].resolution must be > 0")
+            out.append(
+                {
+                    "name": str(g.get("name", f"{int(res)}m")),
+                    "resolution": res,
+                    "oversample_factor": g.get("oversample_factor", None),
+                    "all_touched": g.get("all_touched", None),
+                }
+            )
+        return out
+
+    # fallback path
+    if fallback_resolution is None:
+        fallback_resolution = 10.0
+
+    fallback_resolution = float(fallback_resolution)
+    if fallback_resolution <= 0:
+        raise ValueError("fallback_resolution must be > 0")
+
+    return [
+        {
+            "name": f"{int(fallback_resolution)}m",
+            "resolution": fallback_resolution,
+            "oversample_factor": None,
+            "all_touched": None,
+        }
+    ]
+
+
+
+def _make_grid_aligned_transform(bounds, resolution: float) -> tuple[Affine, tuple[int, int]]:
+    """
+    Build a north-up transform aligned to a requested resolution for the tile bounds.
+    """
+    minx, miny, maxx, maxy = bounds
+    res = float(resolution)
+
+    x0 = np.floor(minx / res) * res
+    y0 = np.floor(miny / res) * res
+    x1 = np.ceil(maxx / res) * res
+    y1 = np.ceil(maxy / res) * res
+
+    width = max(1, int(round((x1 - x0) / res)))
+    height = max(1, int(round((y1 - y0) / res)))
+
+    transform = Affine(res, 0.0, x0, 0.0, -res, y1)
+    return transform, (height, width)
+
+
+def _empty_raster_tile_row(tile_id: int, pixel_area: float, *, grid_name: str, resolution: float) -> dict:
+    """
+    Empty row for tiles with no valid pixels.
+    """
     return {
-        "tile_id":                 tile_id,
-        "tp":                      0,
-        "fp":                      0,
-        "fn":                      0,
-        "precision":               0.0,
-        "recall":                  0.0,
-        "f1":                      0.0,
-        "quantity_disagreement":   0.0,
-        "allocation_disagreement": 0.0,
-        "n_valid_pixels":          0,
-        "pixel_area_m2":           float(pixel_area),
-        "valid_area_m2":           0.0,
-        "area_ref_m2":             0.0,
-        "area_pred_m2":            0.0,
-        "rel_area_error":          np.nan,
-        "signed_area_bias_m2":     0.0,
+        "tile_id": tile_id,
+        "grid": grid_name,
+        "resolution_m": float(resolution),
+        "pixel_area_m2": float(pixel_area),
+        "n_pixels": 0,
+        "n_valid": 0,
+        "valid_area_m2": 0.0,
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "tn": 0,
+        "precision": np.nan,
+        "recall": np.nan,
+        "f1": np.nan,
+        "ref_area_m2": np.nan,
+        "pred_area_m2": np.nan,
+        "rel_area_error": np.nan,
+        "signed_area_bias": np.nan,
+        "quantity_disagreement": np.nan,
+        "allocation_disagreement": np.nan,
     }
+
+
+def _native_guard_settings(pre_cfg: Optional[dict]) -> dict:
+    """
+    Default settings for native-resolution guard.
+    """
+    pre_cfg = pre_cfg or {}
+    guard = pre_cfg.get("native_resolution_guard", {}) or {}
+    return {
+        "enabled": bool(guard.get("enabled", True)),
+        "mode": str(guard.get("mode", "skip_finer")).strip().lower(),
+        "tolerance_factor": float(guard.get("tolerance_factor", 0.75)),
+    }
+
+
+def _filter_evaluation_grids_by_native_resolution(
+    evaluation_grids: List[dict],
+    cand_cfg: dict,
+    guard_cfg: Optional[dict] = None,
+) -> List[dict]:
+    """
+    Filter or validate requested evaluation grids against the dataset's native resolution.
+
+    Rule:
+      Do not evaluate at a finer grid than the dataset's native support,
+      unless explicitly allowed.
+
+    Parameters
+    ----------
+    evaluation_grids : list[dict]
+        Normalized grids, each containing at least:
+          - name
+          - resolution
+    cand_cfg : dict
+        Candidate raster config. May contain:
+          - native_resolution_m
+          - allow_finer_than_native
+          - name
+    guard_cfg : dict
+        Guard behavior config:
+          - enabled: bool
+          - mode: skip_finer | error | warn_only
+          - tolerance_factor: float
+
+    Returns
+    -------
+    list[dict]
+        Filtered list of allowed grids.
+    """
+    guard_cfg = guard_cfg or {}
+    enabled = bool(guard_cfg.get("enabled", True))
+    mode = str(guard_cfg.get("mode", "skip_finer")).strip().lower()
+    tol = float(guard_cfg.get("tolerance_factor", 0.75))
+
+    if not enabled:
+        return evaluation_grids
+
+    if cand_cfg.get("allow_finer_than_native", False):
+        return evaluation_grids
+
+    native_res = cand_cfg.get("native_resolution_m", None)
+    if native_res is None:
+        return evaluation_grids
+
+    native_res = float(native_res)
+    if native_res <= 0:
+        raise ValueError(
+            f"Invalid native_resolution_m={native_res} for raster dataset "
+            f"{cand_cfg.get('name', '<unknown>')}"
+        )
+
+    min_allowed_eval_res = native_res * tol
+
+    allowed = []
+    blocked = []
+
+    for g in evaluation_grids:
+        res = float(g["resolution"])
+        if res < min_allowed_eval_res:
+            blocked.append(g)
+        else:
+            allowed.append(g)
+
+    if blocked:
+        blocked_txt = ", ".join(f"{g['name']} ({g['resolution']} m)" for g in blocked)
+        ds_name = cand_cfg.get("name", "<unknown>")
+        msg = (
+            f"[native-resolution guard] dataset='{ds_name}' "
+            f"native_resolution_m={native_res}, tolerance_factor={tol}, "
+            f"minimum_allowed_eval_resolution={min_allowed_eval_res:.3f} m. "
+            f"Blocked finer evaluation grid(s): {blocked_txt}"
+        )
+
+        if mode == "error":
+            raise ValueError(msg)
+        elif mode == "warn_only":
+            logger.warning(msg)
+            return evaluation_grids
+        elif mode == "skip_finer":
+            logger.warning(msg + " | Skipping blocked grid(s).")
+        else:
+            raise ValueError(
+                f"Unknown native_resolution_guard mode={mode!r}. "
+                f"Use one of: skip_finer, error, warn_only."
+            )
+
+    return allowed

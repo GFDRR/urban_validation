@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from src.metrics import compute_tile_metrics, compute_raster_tile_metrics
+from src.metrics import _native_guard_settings, compute_tile_metrics, compute_raster_tile_metrics
 from src.output import (
     plot_iou_dist,
     plot_iou_per_building_sizes,
@@ -407,20 +407,23 @@ class UrbanValidator:
             log.warning("[%s] No raster config found — skipping.", dataset_id)
             return False
 
-        rast_pre     = rast_cfg.get("preprocessing", {})
-        tau_frac     = float(rast_pre.get("tau_frac", 0.2))
-        oversample   = int(rast_pre.get("oversample_factor", 4))
-        all_touched  = bool(rast_pre.get("all_touched", False))
-        min_area     = float(self.cfg["vector"]["preprocessing"]["min_area_m2"])
-        fix_geoms    = bool(self.cfg["vector"]["preprocessing"].get("fix_invalid_geoms", True))
-        tile_size    = float(self.cfg["vector"]["preprocessing"]["tile_size_m"])
+        rast_pre = rast_cfg.get("preprocessing", {})
+        tau_frac = float(rast_pre.get("tau_frac", 0.2))
+        oversample = int(rast_pre.get("oversample_factor", 4))
+        all_touched = bool(rast_pre.get("all_touched", False))
+        evaluation_grids = rast_pre.get("evaluation_grids", None)
+        native_guard_cfg = _native_guard_settings(rast_pre)
 
-        out_cfg   = self.cfg.get("output", {})
+        min_area = float(self.cfg["vector"]["preprocessing"]["min_area_m2"])
+        fix_geoms = bool(self.cfg["vector"]["preprocessing"].get("fix_invalid_geoms", True))
+        tile_size = float(self.cfg["vector"]["preprocessing"]["tile_size_m"])
+
+        out_cfg = self.cfg.get("output", {})
         overwrite = bool(out_cfg.get("overwrite", False))
-        dpi       = int(out_cfg.get("figures", {}).get("dpi", 200))
-        fmt       = str(out_cfg.get("figures", {}).get("fmt", "png"))
+        dpi = int(out_cfg.get("figures", {}).get("dpi", 200))
+        fmt = str(out_cfg.get("figures", {}).get("fmt", "png"))
 
-        city_slug   = dataset_id.lower()
+        city_slug = dataset_id.lower()
         metrics_dir = self.root / "outputs" / "metrics" / city_slug
         figures_dir = self.root / "outputs" / "figures" / city_slug
         metrics_dir.mkdir(parents=True, exist_ok=True)
@@ -445,18 +448,20 @@ class UrbanValidator:
         log.info("━━━━  %s (raster)  ━━━━", dataset_id)
         log_memory(f"{dataset_id} raster start")
 
-        # Build tiles from AOI
-        crs      = get_projected_crs(ds["aoi"])
+        crs = get_projected_crs(ds["aoi"])
         aoi_proj = ds["aoi"].to_crs(crs)
-        tiles    = make_tiles(aoi_proj, tile_size)
+        tiles = make_tiles(aoi_proj, tile_size)
         aoi_union = aoi_proj.geometry.union_all()
         log.info("[%s] Raster CRS: %s | %d tiles.", dataset_id, crs, len(tiles))
         del aoi_proj
 
-        # Load and merge reference buildings
         ref_parts = [
-            load_buildings(path=p, crs_work=crs, min_area_m2=min_area,
-                           fix_invalid_geoms=fix_geoms)
+            load_buildings(
+                path=p,
+                crs_work=crs,
+                min_area_m2=min_area,
+                fix_invalid_geoms=fix_geoms,
+            )
             for p in existing_refs
         ]
         ref_all = (
@@ -465,32 +470,19 @@ class UrbanValidator:
         )
         del ref_parts
         ref_sindex = ref_all.sindex
-        log.info("[%s] Reference buildings: %d", dataset_id, len(ref_all))
+        log.info("[%s] Raster reference buildings: %d (from %d file(s))",
+                dataset_id, len(ref_all), len(existing_refs))
 
-        # Discover and evaluate each raster candidate
-        rast_dir          = self.data_dir / dataset_id / "raster"
-        city_slug_us      = city_slug.replace("-", "_")
+        rast_dir = self.data_dir / dataset_id / "raster"
         per_ds_tile_paths: List[Path] = []
 
         for cand_cfg in rast_cfg.get("datasets", []):
             if not cand_cfg.get("enabled", True):
                 continue
 
-            ds_name = cand_cfg["name"].replace("-", "_")
-            year    = cand_cfg.get("year")          # e.g. 2023, "2023q4", 2025
-
-            # Build an exact filename when year is given; fall back to glob otherwise.
-            # File naming mirrors the downloader:
-            #   obt        → {city_slug}_obt_{year}.tif
-            #   tempo      → {city_slug}_tempo_{year}.tif   (year = "2023q4")
-            #   ghsl_*     → {city_slug}_ghsl_{product}_{year}.tif
-            if year is not None:
-                exact = rast_dir / f"{city_slug_us}_{ds_name}_{year}.tif"
-                candidate_files = [exact] if exact.exists() else []
-                pattern = f"{city_slug_us}_{ds_name}_{year}.tif"
-            else:
-                pattern = f"{city_slug_us}_{ds_name}*.tif"
-                candidate_files = sorted(rast_dir.glob(pattern))
+            ds_name = cand_cfg["name"]
+            pattern = cand_cfg.get("pattern", f"{city_slug.replace('-', '_')}_{ds_name}*")
+            candidate_files = sorted(rast_dir.glob(pattern))
 
             if not candidate_files:
                 log.warning("[%s / %s] No raster file found (pattern: %s).",
@@ -498,13 +490,12 @@ class UrbanValidator:
                 continue
 
             cand_path = candidate_files[0]
-
-            # Label used for output files; includes year to avoid collisions across runs
+            year = cand_cfg.get("year", None)
             ds_label = f"{ds_name}_{year}" if year is not None else ds_name
             log.info("[%s / %s] Raster candidate: %s", dataset_id, ds_label, cand_path.name)
 
             try:
-                tile_path = self._run_raster_candidate(
+              tile_path = self._run_raster_candidate(
                     dataset_id=dataset_id,
                     ds_label=ds_label,
                     cand_path=cand_path,
@@ -517,11 +508,14 @@ class UrbanValidator:
                     tau_frac=tau_frac,
                     oversample=oversample,
                     all_touched=all_touched,
+                    evaluation_grids=evaluation_grids,
+                    native_guard_cfg=native_guard_cfg,
                 )
             except Exception:
                 log.exception("[%s / %s] Raster candidate failed — skipping.",
-                              dataset_id, ds_label)
+                            dataset_id, ds_label)
                 tile_path = None
+
             if tile_path:
                 per_ds_tile_paths.append(tile_path)
 
@@ -532,18 +526,20 @@ class UrbanValidator:
             log.warning("[%s] No raster tile metrics produced — skipping output.", dataset_id)
             return False
 
-        # Combine and save
         metrics_all = pd.concat(
-            [pd.read_parquet(p) for p in per_ds_tile_paths], ignore_index=True
+            [pd.read_parquet(p) for p in per_ds_tile_paths],
+            ignore_index=True,
         )
         metrics_all.to_parquet(sentinel, index=False)
 
         city_summary = summarize_raster_city(dataset_id, metrics_all)
         city_summary.to_parquet(
-            metrics_dir / "raster_city_summary_all_datasets.parquet", index=False
+            metrics_dir / "raster_city_summary_all_datasets.parquet",
+            index=False,
         )
         city_summary.to_csv(
-            metrics_dir / "raster_city_summary_all_datasets.csv", index=False
+            metrics_dir / "raster_city_summary_all_datasets.csv",
+            index=False,
         )
         log.info("[%s] Raster city summary saved.", dataset_id)
         del city_summary
@@ -581,8 +577,10 @@ class UrbanValidator:
         tau_frac: float,
         oversample: int,
         all_touched: bool,
+        evaluation_grids: Optional[List[dict]] = None,
+        native_guard_cfg: Optional[dict] = None,
     ) -> Optional[Path]:
-        """Evaluate one raster candidate over all tiles. Returns tile-metrics parquet path."""
+        """Evaluate one raster candidate over all tiles and requested grids."""
         tile_df = compute_raster_tile_metrics(
             raster_path=cand_path,
             cand_cfg=cand_cfg,
@@ -593,12 +591,14 @@ class UrbanValidator:
             tau_frac=tau_frac,
             default_oversample=oversample,
             default_all_touched=all_touched,
+            evaluation_grids=evaluation_grids,
+            native_guard_cfg=native_guard_cfg,
         )
         if tile_df.empty:
             log.warning("[%s / %s] No raster tile metrics produced.", dataset_id, ds_label)
             return None
 
-        tile_df["city"]    = dataset_id
+        tile_df["city"] = dataset_id
         tile_df["dataset"] = ds_label
 
         out_path = metrics_dir / f"raster_metrics_tiles_{ds_label}.parquet"
@@ -617,26 +617,39 @@ class UrbanValidator:
         dpi: int,
         fmt: str,
     ) -> None:
-        """Generate and save standard raster visualisations for one dataset."""
         matplotlib.use("Agg")
         city_label = dataset_id.replace("-", " ").title()
 
+        # Boxplots across all (dataset, grid) combos work fine if you keep the dataset label expanded.
+        metrics_plot = metrics_all.copy()
+        if "grid" in metrics_plot.columns:
+            metrics_plot["dataset"] = (
+                metrics_plot["dataset"].astype(str) + " | " + metrics_plot["grid"].astype(str)
+            )
+
         try:
-            plot_raster_tile_f1_boxplot(metrics_all, figures_dir, city_label, dpi=dpi, fmt=fmt)
+            plot_raster_tile_f1_boxplot(metrics_plot, figures_dir, city_label, dpi=dpi, fmt=fmt)
         except Exception:
             log.warning("[%s] plot_raster_tile_f1_boxplot failed:\n%s",
                         dataset_id, traceback.format_exc())
 
         try:
-            tile_f1_spatial_dist(tiles, metrics_all, figures_dir, city_label, dpi=dpi, fmt=fmt)
-        except Exception:
-            log.warning("[%s] tile_f1_spatial_dist (raster) failed:\n%s",
-                        dataset_id, traceback.format_exc())
-
-        try:
-            plot_raster_rel_area_error_boxplot(metrics_all, figures_dir, city_label,
-                                               dpi=dpi, fmt=fmt)
+            plot_raster_rel_area_error_boxplot(metrics_plot, figures_dir, city_label,
+                                            dpi=dpi, fmt=fmt)
         except Exception:
             log.warning("[%s] plot_raster_rel_area_error_boxplot failed:\n%s",
+                        dataset_id, traceback.format_exc())
+
+        # Spatial maps: one per (dataset, grid)
+        try:
+            if "grid" in metrics_all.columns:
+                for (ds_name, grid_name), g in metrics_all.groupby(["dataset", "grid"]):
+                    g_plot = g.copy()
+                    g_plot["dataset"] = f"{ds_name} | {grid_name}"
+                    tile_f1_spatial_dist(tiles, g_plot, figures_dir, city_label, dpi=dpi, fmt=fmt)
+            else:
+                tile_f1_spatial_dist(tiles, metrics_all, figures_dir, city_label, dpi=dpi, fmt=fmt)
+        except Exception:
+            log.warning("[%s] tile_f1_spatial_dist (raster) failed:\n%s",
                         dataset_id, traceback.format_exc())
 

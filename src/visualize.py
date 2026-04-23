@@ -1,7 +1,6 @@
 """
-TODO: contain code for reporting output visualizations
+contain code for reporting output visualizations
 """
-
 
 import pandas as pd
 import geopandas as gpd
@@ -10,6 +9,7 @@ from folium.plugins import MarkerCluster, GroupedLayerControl
 from pathlib import Path
 
 COUNTRY_CENTROIDS = {
+    "afg": (34.53, 69.17),
     "ant": (12.10, -68.90),  "bgd": (23.70,  90.40),  "blz": (17.30, -88.50),
     "bra": (-12.90, -38.40), "col": ( 6.20, -75.60),  "cvg": (13.20, -61.20),
     "dom": (15.40, -61.40),  "gha": ( 7.90,  -1.00),  "grd": (12.10, -61.70),
@@ -27,6 +27,55 @@ def _country_centroid(dataset_id: str):
     prefix = dataset_id[:3].lower()
     return COUNTRY_CENTROIDS.get(prefix, (None, None))
 
+
+def _is_truthy(value) -> bool:
+    if pd.isna(value):
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"true", "1", "yes", "y", "t"}
+
+
+def _split_pipe_values(value) -> list[str]:
+    if pd.isna(value):
+        return []
+    return [part.strip() for part in str(value).split("|") if part.strip()]
+
+
+def _build_dataset_rows(raw_df: pd.DataFrame) -> pd.DataFrame:
+    records = []
+    for dataset_id, grp in raw_df.groupby("Dataset code", dropna=True, sort=False):
+        dataset_id = str(dataset_id).strip()
+        if not dataset_id:
+            continue
+
+        path_tokens = []
+        if "aoi_file_path" in grp.columns:
+            for val in grp["aoi_file_path"]:
+                path_tokens.extend(_split_pipe_values(val))
+
+        file_tokens = []
+        if "aoi_file_name" in grp.columns:
+            for val in grp["aoi_file_name"]:
+                file_tokens.extend(_split_pipe_values(val))
+
+        records.append(
+            {
+                "Dataset code": dataset_id,
+                "has_aoi_file": any(_is_truthy(v) for v in grp.get("has_aoi_file", pd.Series(dtype=object))),
+                "has_reference_file": any(_is_truthy(v) for v in grp.get("has_reference_file", pd.Series(dtype=object))),
+                "aoi_file_count": pd.to_numeric(grp.get("aoi_file_count", 0), errors="coerce").fillna(0).max(),
+                "reference_file_count": pd.to_numeric(grp.get("reference_file_count", 0), errors="coerce").fillna(0).max(),
+                "match_score": pd.to_numeric(grp.get("match_score", 0), errors="coerce").fillna(0).max(),
+                "aoi_file_paths": sorted(set(path_tokens)),
+                "aoi_file_names": sorted(set(file_tokens)),
+            }
+        )
+
+    return pd.DataFrame(records)
+
 def build_inventory_map(
     csv_path: str,
     base_dir: str,
@@ -41,8 +90,9 @@ def build_inventory_map(
     base_dir  : root directory where AOI geojson files live (e.g. data/01_raw)
     out_html  : output path for the saved HTML map
     """
-    base_dir = Path(base_dir)
-    df = pd.read_csv(csv_path).drop_duplicates(subset=["Dataset code"])
+    base_path = Path(base_dir)
+    raw_df = pd.read_csv(csv_path)
+    df = _build_dataset_rows(raw_df)
 
 
     m = folium.Map(
@@ -59,19 +109,19 @@ def build_inventory_map(
     # ── Process each dataset ──────────────────────────────────────────────────
     for _, row in df.iterrows():
         dataset_id = str(row["Dataset code"])
-        has_aoi    = bool(row["has_aoi_file"])
-        has_ref    = bool(row["has_reference_file"])
-        aoi_count  = int(row["aoi_file_count"])
-        ref_count  = int(row["reference_file_count"])
-        score      = row["match_score"]
-        raw_paths  = str(row.get("aoi_file_path", ""))
+        has_aoi    = _is_truthy(row.get("has_aoi_file", False))
+        has_ref    = _is_truthy(row.get("has_reference_file", False))
+        aoi_count  = int(pd.to_numeric(row.get("aoi_file_count", 0), errors="coerce") or 0)
+        ref_count  = int(pd.to_numeric(row.get("reference_file_count", 0), errors="coerce") or 0)
+        score      = int(pd.to_numeric(row.get("match_score", 0), errors="coerce") or 0)
+        aoi_paths_from_csv = list(row.get("aoi_file_paths", []) or [])
+        aoi_names_from_csv = list(row.get("aoi_file_names", []) or [])
 
         # Resolve AOI file paths
-        aoi_paths = [
-            base_dir / p.strip()
-            for p in raw_paths.split("|")
-            if p.strip()
-        ]
+        aoi_paths = [base_path / p for p in aoi_paths_from_csv]
+        if not aoi_paths and aoi_names_from_csv:
+            # Backward-compatible fallback when only AOI filenames are available.
+            aoi_paths = [base_path / dataset_id / "aoi" / name for name in aoi_names_from_csv]
         existing = [p for p in aoi_paths if p.exists()]
 
         # Status and styling
@@ -179,7 +229,7 @@ def build_inventory_map(
     # folium.LayerControl(collapsed=False).add_to(m)
 
     total    = len(df)
-    n_full   = df.apply(lambda r: bool(r["has_aoi_file"]) and bool(r["has_reference_file"]), axis=1).sum()
+    n_full   = df.apply(lambda r: _is_truthy(r["has_aoi_file"]) and _is_truthy(r["has_reference_file"]), axis=1).sum()
     n_partial = total - n_full
 
     stats_html = f"""

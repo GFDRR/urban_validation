@@ -274,9 +274,23 @@ def plot_iou_per_building_sizes(
 
 # raster output 
 def summarize_raster_city(city: str, metrics_tiles: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate tile-level raster metrics into one summary row per dataset."""
+    """
+    Aggregate tile-level raster metrics into one summary row per dataset and grid.
+    """
     rows = []
-    for ds_name, g in metrics_tiles.groupby("dataset"):
+
+    group_cols = ["dataset"]
+    if "grid" in metrics_tiles.columns:
+        group_cols.append("grid")
+    if "resolution_m" in metrics_tiles.columns:
+        group_cols.append("resolution_m")
+
+    for keys, g in metrics_tiles.groupby(group_cols):
+        if isinstance(keys, tuple):
+            key_map = dict(zip(group_cols, keys))
+        else:
+            key_map = {group_cols[0]: keys}
+
         tp = int(g["tp"].sum())
         fp = int(g["fp"].sum())
         fn = int(g["fn"].sum())
@@ -287,41 +301,53 @@ def summarize_raster_city(city: str, metrics_tiles: pd.DataFrame) -> pd.DataFram
         fn_m2 = float((g["fn"] * g["pixel_area_m2"]).sum())
 
         precision_area = tp_m2 / (tp_m2 + fp_m2) if (tp_m2 + fp_m2) > 0 else 0.0
-        recall_area    = tp_m2 / (tp_m2 + fn_m2) if (tp_m2 + fn_m2) > 0 else 0.0
-        f1_area        = (2 * precision_area * recall_area / (precision_area + recall_area)
-                          if (precision_area + recall_area) > 0 else 0.0)
+        recall_area = tp_m2 / (tp_m2 + fn_m2) if (tp_m2 + fn_m2) > 0 else 0.0
+        f1_area = (
+            2 * precision_area * recall_area / (precision_area + recall_area)
+            if (precision_area + recall_area) > 0 else 0.0
+        )
 
-        f1_s   = g["f1"].dropna()
-        err_s  = g["rel_area_error"].dropna()
-        qd_s   = g["quantity_disagreement"].dropna()
-        ad_s   = g["allocation_disagreement"].dropna()
+        f1_s = g["f1"].dropna()
+        err_s = g["rel_area_error"].dropna()
+        qd_s = g["quantity_disagreement"].dropna()
+        ad_s = g["allocation_disagreement"].dropna()
 
-        def _r(v): return round(float(v), 4) if np.isfinite(v) else float("nan")
+        ref_area_total_m2 = float(g["ref_area_m2"].dropna().sum()) if "ref_area_m2" in g.columns else np.nan
+        pred_area_total_m2 = float(g["pred_area_m2"].dropna().sum()) if "pred_area_m2" in g.columns else np.nan
+        signed_area_bias = (
+            (pred_area_total_m2 - ref_area_total_m2) / ref_area_total_m2
+            if np.isfinite(ref_area_total_m2) and ref_area_total_m2 > 0
+            else np.nan
+        )
 
-        rows.append({
-            "city":                          city,
-            "dataset":                       ds_name,
-            "n_tiles":                       int(g["tile_id"].nunique()),
-            "valid_area_total_m2":           valid_area_total_m2,
-            "tp_m2":                         tp_m2,
-            "fp_m2":                         fp_m2,
-            "fn_m2":                         fn_m2,
-            "tp_area_rate":                  _r(tp_m2 / valid_area_total_m2) if valid_area_total_m2 > 0 else float("nan"),
-            "fp_area_rate":                  _r(fp_m2 / valid_area_total_m2) if valid_area_total_m2 > 0 else float("nan"),
-            "fn_area_rate":                  _r(fn_m2 / valid_area_total_m2) if valid_area_total_m2 > 0 else float("nan"),
-            "precision_area":                _r(precision_area),
-            "recall_area":                   _r(recall_area),
-            "f1_area":                       _r(f1_area),
-            "tile_f1_mean":                  _r(f1_s.mean()) if len(f1_s) else float("nan"),
-            "tile_f1_median":                _r(f1_s.median()) if len(f1_s) else float("nan"),
-            "tile_f1_p25":                   _r(f1_s.quantile(0.25)) if len(f1_s) else float("nan"),
-            "tile_f1_p75":                   _r(f1_s.quantile(0.75)) if len(f1_s) else float("nan"),
-            "rel_area_error_mean":           _r(err_s.mean()) if len(err_s) else float("nan"),
-            "rel_area_error_median":         _r(err_s.median()) if len(err_s) else float("nan"),
-            "quantity_disagreement_mean":    _r(qd_s.mean()) if len(qd_s) else float("nan"),
-            "allocation_disagreement_mean":  _r(ad_s.mean()) if len(ad_s) else float("nan"),
-            "signed_area_bias_total_m2":     float(g["signed_area_bias_m2"].sum()),
-        })
+        def _r(v):
+            return round(float(v), 4) if np.isfinite(v) else float("nan")
+
+        row = {
+            "city": city,
+            "dataset": key_map["dataset"],
+            "grid": key_map.get("grid", None),
+            "resolution_m": key_map.get("resolution_m", None),
+            "n_tiles": int(g["tile_id"].nunique()),
+            "valid_area_total_m2": valid_area_total_m2,
+            "ref_area_total_m2": ref_area_total_m2,
+            "pred_area_total_m2": pred_area_total_m2,
+            "tp_total": tp,
+            "fp_total": fp,
+            "fn_total": fn,
+            "precision_area": _r(precision_area),
+            "recall_area": _r(recall_area),
+            "f1_area": _r(f1_area),
+            "f1_tile_mean": _r(f1_s.mean()) if len(f1_s) else float("nan"),
+            "f1_tile_median": _r(f1_s.median()) if len(f1_s) else float("nan"),
+            "rel_area_error_mean": _r(err_s.mean()) if len(err_s) else float("nan"),
+            "rel_area_error_median": _r(err_s.median()) if len(err_s) else float("nan"),
+            "signed_area_bias": _r(signed_area_bias),
+            "quantity_disagreement_mean": _r(qd_s.mean()) if len(qd_s) else float("nan"),
+            "allocation_disagreement_mean": _r(ad_s.mean()) if len(ad_s) else float("nan"),
+        }
+        rows.append(row)
+
     return pd.DataFrame(rows)
 
 
