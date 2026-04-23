@@ -73,7 +73,7 @@ datasets:
 
   wsf_tracker:
     enabled: true
-    drive_root: "/content/drive/MyDrive/WSFsoftRelease"
+    drive_root: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/WSFsoftRelease"
     tif_glob: "*.tif"
     make_mosaic: true
     keep_tile_copies: false
@@ -82,4 +82,3 @@ datasets:
     interval_months: 6
     nodata: 0
     tile_degree_size: 2
-    
