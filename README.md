@@ -107,7 +107,7 @@ This code repository and corresponding datasets are distributed under the MIT Li
 
 ```
 @misc{gfdrr2026,
-  title={An assessment of satellite derived global urban datasets for operational and analytical use},
+  title={An assessment of satellite derived global urban datasets for operational and analytical use cases},
   author={},
   year={2026},
   organization={GFDRR, The World Bank Group},
@@ -118,8 +118,8 @@ This code repository and corresponding datasets are distributed under the MIT Li
 
 ## Contributors
 Rufai Omowunmi Balogun,
-Derrick Mirindi,
 Caroline Gevaert,
+Derrick Mirindi,
 Pierre Chrzanowski,
 
 ## Acknowledgment
