@@ -1,11 +1,15 @@
 """
-Building dataset downloader — vector (Overture / GBA / GloBFP) and
-raster (Google OBT / Microsoft TEMPO / GHSL).
+Main class for downloading urban building datasets with AOI-based spatial filtering for both the vector and raster datasets.
+This is the main entry point for AOI-level (see aoi_tracker.csv) data download in the pipeline, and can be called with main.py or used independently in a notebook environment.
+Vector sources: Overture Maps, Global Building Atlas (GBA), GloBFP
+Raster sources: Google Open Buildings Temporal (OBT), Microsoft TEMPO, GHSL, WSF Tracker
 
-Usage:
+Usage guidance:
     downloader = UrbanDownloader("configs/data_configs.yaml")
     downloader.download_vector()   # Overture, GBA, GloBFP
     downloader.download_raster()   # Google OBT, TEMPO, GHSL
+
+Prepared by: Rufai Omowunmi Balogun
 """
 from __future__ import annotations
 
