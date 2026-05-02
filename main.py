@@ -1,10 +1,12 @@
 """
 Main entry point for running Urban Downloader and Validator pipelines end to end.
+
 Usage guidance:
-- For Colab: Use the provided project root path and ensure Drive is mounted. In a Colab notebook cell):
+- For Colab: Use the provided project root path and ensure Drive is mounted.
+  In a Colab notebook cell:
         %run main.py
         !python main.py --data-config configs/data_configs.yaml --val-config configs/validation_configs.yaml
-- From the CLI (project needs to be set  up within a Colab Environment): 
+- From the CLI (project needs to be set up within a Colab environment):
     python main.py
     python main.py --skip-download
     python main.py --skip-download --skip-raster
@@ -12,27 +14,26 @@ Usage guidance:
 
 Prepared by: Rufai Omowunmi Balogun
 """
-
 from __future__ import annotations
 
 import argparse
 import logging
-import os
-import sys
 import warnings
 from pathlib import Path
 
-from src.utils import is_colab, colab_setup
+from src.utils.runtime import colab_setup, is_colab
 from src.downloader import UrbanDownloader
 from src.validator import UrbanValidator
 
 warnings.filterwarnings("ignore")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger(__name__)
+
 
 def run_download(data_config: str) -> None:
     downloader = UrbanDownloader(data_config)
@@ -48,6 +49,7 @@ def run_vector_validation(val_config: str) -> None:
     results = UrbanValidator(val_config).validate_vector()
     ok = sum(v for v in results.values())
     log.info("Vector validation complete — %d/%d cities succeeded.", ok, len(results))
+
 
 def run_raster_validation(val_config: str) -> None:
     log.info("Raster validation: validating raster datasets against reference data.")
@@ -96,6 +98,7 @@ def main() -> None:
         run_raster_validation(val_config)
 
     log.info("Pipeline complete.")
+
 
 if __name__ == "__main__":
     main()

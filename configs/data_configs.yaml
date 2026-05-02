@@ -1,87 +1,72 @@
 aoi:
   path: data/02_interim/aoi_tracker.csv
-  # path: data/01_raw/ssd-juba/aoi/juba_aoi.geojson
-  base_dir: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/01_raw"
-  id_col: "Dataset code"
-  crs_out: "EPSG:4326"
+  base_dir: /content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/01_raw
+  id_col: Dataset code
+  crs_out: EPSG:4326
   buffer_meters: 0
   filter_suitable: true
 
 overture:
   enabled: true
-  provider: "aws"          
-  release: "latest" 
-  theme: "buildings"
-  types: ["building"] # "building_part"]
-  s3_url: "s3://overturemaps-us-west-2/release/"
-  s3_region: "us-west-2"
+  provider: aws
+  release: latest
+  theme: buildings
+  types: [building]
+  s3_url: s3://overturemaps-us-west-2/release/
+  s3_region: us-west-2
 
 gba:
   enabled: true
-  s3_url: "s3://us-west-2.opendata.source.coop/tge-labs/globalbuildingatlas-lod1/"
-  s3_region: "us-west-2"
+  s3_url: s3://us-west-2.opendata.source.coop/tge-labs/globalbuildingatlas-lod1/
+  s3_region: us-west-2
 
 globfp:
   enabled: true
-  local_dir: "data/01_raw/globfp_cache"
+  local_dir: data/01_raw/globfp_cache
   zenodo_record: 15487006
 
 output:
   overwrite: false
-  use_base_dir_for_output: true  # write into <aoi.base_dir>/<dataset_id>/raster/
-  root_dir: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/outputs/"      # only used when use_base_dir_for_output is false
+  use_base_dir_for_output: true
+  # Used only when use_base_dir_for_output is false.
+  root_dir: /content/drive/MyDrive/Gates Foundation/Building Dataset Validation/outputs/
 
-ee_project: "urbanvalidation"   # e.g. "ee-myproject"
+ee_project: urbanvalidation
 
 datasets:
-
   google_open_buildings_temporal:
     enabled: true
-    ee_collection_id: "GOOGLE/Research/open-buildings-temporal/v1"
-    # years: [2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023]
+    ee_collection_id: GOOGLE/Research/open-buildings-temporal/v1
     years: [2020]
-
     bands:
       - building_presence
       - building_height
       - building_fractional_count
-    scale: 4          # native resolution in metres
+    scale: 4
 
   microsoft_tempo:
     enabled: true
-    tile_index_url: "https://opendata.aiforgood.ai/building-density/tile_index.gpkg"
-    tile_index_cache: "data/cache/tempo_tile_index.gpkg"
-    tile_cache_dir: "data/cache/tempo_tiles"   # shared across all cities
+    tile_index_url: https://opendata.aiforgood.ai/building-density/tile_index.gpkg
+    tile_index_cache: data/cache/tempo_tile_index.gpkg
+    tile_cache_dir: data/cache/tempo_tiles
     make_mosaic: true
 
   ghsl:
     enabled: true
     products:
-      # BUILT_H:
-      #   ee_id: "JRC/GHSL/P2023A/GHS_BUILT_H"
-      #   band: "built_height"
-      #   scale: 100
-      #   years: [2018]
       BUILT_S:
-        ee_id: "JRC/GHSL/P2023A/GHS_BUILT_S"
-        band: "built_surface"
+        ee_id: JRC/GHSL/P2023A/GHS_BUILT_S
+        band: built_surface
         scale: 10
-        # years: [1975, 1980, 1985, 1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025, 2030]
         years: [2020]
-
-      # BUILT_V:
-      #   ee_id: "JRC/GHSL/P2023A/GHS_BUILT_V"
-      #   band: "built_volume_total"
-      #   scale: 100
-      #   years: [1975, 1980, 1985, 1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025, 2030]
 
   wsf_tracker:
     enabled: true
-    drive_root: "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/WSFsoftRelease"
+    drive_root: /content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/WSFsoftRelease
     tif_glob: "*.tif"
     make_mosaic: true
     keep_tile_copies: false
-    output_prefix: "wsf_tracker"
+    output_prefix: wsf_tracker
     first_timestamp: "2016-07-01"
     interval_months: 6
     nodata: 0

@@ -16,7 +16,7 @@ Our datasets and validation are provided for these AOIs:
 
 </div>
 
-![AOIs with high quality references](outputs/sample_AOIs.png)
+![AOIs with high quality references](figures/sample_AOIs.png)
 
 Dataset would be provided publicly here: 
 
