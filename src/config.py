@@ -117,7 +117,6 @@ class WSFTrackerConfig:
     nodata: int = 0
     tile_degree_size: int = 2         # filenames suggest 2° x 2° tiles
 
-
 @dataclass
 class DatasetsConfig:
     google_open_buildings_temporal: GoogleOBTConfig = field(default_factory=GoogleOBTConfig)

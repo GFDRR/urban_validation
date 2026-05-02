@@ -2,11 +2,12 @@ root_dir: /content/drive/MyDrive/Gates Foundation/Building Dataset Validation
 data_dir: data/01_raw
 aoi_tracker: data/02_interim/aoi_tracker.csv
 
-crs: EPSG:4326
+# Used by figure generation in src/plots/figures.py.
+size_bins:
+  bins: [0, 25, 50, 100, 500, 1000, .inf]
+  labels: ["<25", "25-50", "50-100", "100-500", "500-1000", ">1000"]
 
 vector:
-  out_path: data/01_raw
-
   preprocessing:
     min_area_m2: 20
     tile_size_m: 1000
@@ -15,23 +16,17 @@ vector:
     tau_boundary: 2.0
     fix_invalid_geoms: true
 
-  size_bins:
-    bins: [0, 25, 50, 100, 500, 1000, .inf]
-    labels: ["<25", "25–50", "50–100", "100–500", "500–1000", ">1000"]
-
   datasets:
     - name: overture
-      label: "Overture Maps"
+      label: Overture Maps
       enabled: true
 
     - name: gba
-      label: "Global Building Atlas"
+      label: Global Building Atlas
       enabled: true
-      s3_url: "s3://us-west-2.opendata.source.coop/tge-labs/globalbuildingatlas-lod1/"
-      s3_region: "us-west-2"
 
     - name: globfp
-      label: "3D GloBFP"
+      label: 3D GloBFP
       enabled: true
 
 raster:
@@ -39,23 +34,23 @@ raster:
     tau_frac: 0.2
     oversample_factor: 4
     all_touched: false
-    
+
     evaluation_grids:
-      - name: "10m"
+      - name: 10m
         resolution: 10
-      - name: "30m"
+      - name: 30m
         resolution: 30
-      - name: "100m"
+      - name: 100m
         resolution: 100
 
     native_resolution_guard:
       enabled: true
-      mode: "skip_finer"   # one of: skip_finer, error, warn_only
+      mode: skip_finer
       tolerance_factor: 0.75
 
   datasets:
     - name: obt
-      label: "Google OBT"
+      label: Google OBT
       enabled: true
       year: 2023
       binarize:
@@ -67,7 +62,7 @@ raster:
         nodata: null
 
     - name: tempo
-      label: "Microsoft TEMPO"
+      label: Microsoft TEMPO
       enabled: true
       year: 2023q4
       binarize:
@@ -81,7 +76,7 @@ raster:
         oversample_factor: 16
 
     - name: ghsl_built_s
-      label: "GHS Built-S"
+      label: GHS Built-S
       enabled: true
       year: 2020
       binarize:
@@ -93,7 +88,7 @@ raster:
         oversample_factor: 16
 
     - name: wsf_tracker
-      label: "WSF Tracker"
+      label: WSF Tracker
       enabled: true
       binarize:
         method: wsf_tracker
