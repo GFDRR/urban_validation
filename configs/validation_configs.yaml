@@ -38,8 +38,8 @@ raster:
     evaluation_grids:
       - name: 10m
         resolution: 10
-      - name: 30m
-        resolution: 30
+      - name: 37.6m
+        resolution: 37.6
       - name: 100m
         resolution: 100
 
@@ -58,7 +58,7 @@ raster:
         band: 1
         clamp_min: 0.0
         clamp_max: 1.0
-        threshold_frac: 0.2
+        threshold_frac: 0.5
         nodata: null
 
     - name: tempo
@@ -70,7 +70,7 @@ raster:
         band: 1
         clamp_min: 0.0
         clamp_max: 1.0
-        threshold_frac: 0.2
+        threshold_frac: 0.5
         nodata: null
       rasterization:
         oversample_factor: 16
@@ -78,7 +78,7 @@ raster:
     - name: ghsl_built_s
       label: GHS Built-S
       enabled: true
-      year: 2020
+      year: 2025
       binarize:
         method: area_m2
         band: 1

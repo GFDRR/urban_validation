@@ -37,7 +37,7 @@ datasets:
   google_open_buildings_temporal:
     enabled: true
     ee_collection_id: GOOGLE/Research/open-buildings-temporal/v1
-    years: [2020]
+    years: [2023]
     bands:
       - building_presence
       - building_height
@@ -57,8 +57,8 @@ datasets:
       BUILT_S:
         ee_id: JRC/GHSL/P2023A/GHS_BUILT_S
         band: built_surface
-        scale: 10
-        years: [2020]
+        scale: 100
+        years: [2025]
 
   wsf_tracker:
     enabled: true
