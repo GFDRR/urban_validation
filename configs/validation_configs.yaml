@@ -44,7 +44,7 @@ raster:
     native_resolution_guard:
       enabled: true
       mode: skip_finer
-      tolerance_factor: 0.75
+      tolerance_factor: 0.95
 
   datasets:
     - name: obt
@@ -54,14 +54,14 @@ raster:
       year: 2023
       binarize:
         method: fraction
-        band: 1
+        band: 1  # building_presence (0–1 probability)
         clamp_min: 0.0
         clamp_max: 1.0
-        threshold_frac: 0.5
-        nodata: null
+        # threshold_frac: 0.5
+        nodata: 0
 
     - name: tempo
-      native_resolution_m: 10
+      native_resolution_m: 100
       label: Microsoft TEMPO
       enabled: true
       year: 2023q4
@@ -70,7 +70,7 @@ raster:
         band: 1
         clamp_min: 0.0
         clamp_max: 1.0
-        threshold_frac: 0.5
+        # threshold_frac: 0.5
         nodata: null
       rasterization:
         oversample_factor: 16
