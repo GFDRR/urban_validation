@@ -16,12 +16,10 @@ from typing import List, Optional
 import geopandas as gpd
 import pandas as pd
 
-from src.metrics.metrics import (
-    _native_guard_settings,
-    compute_raster_tile_metrics,
-)
+from src.metrics.raster.grids import _native_guard_settings
+from src.metrics.raster.tile_metrics import compute_raster_tile_metrics
 from src.plots.output import purge_matplotlib, summarize_raster_city
-from src.utils import log_memory
+from src.utils.memory import log_memory
 from src.validate.base import BaseValidationRunner
 from src.plots.figures import RasterFigureGenerator
 
@@ -95,6 +93,11 @@ class RasterValidationRunner(BaseValidationRunner):
             dataset_id, len(ref_all), len(existing_refs),
         )
 
+        n_ref_buildings = len(ref_all)
+        aoi_area_km2 = aoi_union.area / 1e6
+        buildings_per_km2 = n_ref_buildings / aoi_area_km2 if aoi_area_km2 > 0 else float("nan")
+        avg_building_size_m2 = float(ref_all.geometry.area.mean()) if n_ref_buildings > 0 else float("nan")
+
         # Per-candidate runs
         city_slug = dataset_id.lower()
         rast_dir = self.data_dir / dataset_id / "raster"
@@ -105,9 +108,14 @@ class RasterValidationRunner(BaseValidationRunner):
                 continue
 
             ds_name = cand_cfg["name"]
-            pattern = cand_cfg.get(
-                "pattern", f"{city_slug.replace('-', '_')}_{ds_name}*"
+            year = cand_cfg.get("year", None)
+            slug = city_slug.replace("-", "_")
+            default_pattern = (
+                f"{slug}_{ds_name}_{year}*"
+                if year is not None
+                else f"{slug}_{ds_name}*"
             )
+            pattern = cand_cfg.get("pattern", default_pattern)
             candidate_files = sorted(rast_dir.glob(pattern))
 
             if not candidate_files:
@@ -118,7 +126,6 @@ class RasterValidationRunner(BaseValidationRunner):
                 continue
 
             cand_path = candidate_files[0]
-            year = cand_cfg.get("year", None)
             ds_label = f"{ds_name}_{year}" if year is not None else ds_name
             log.info(
                 "[%s / %s] Raster candidate: %s",
@@ -168,7 +175,14 @@ class RasterValidationRunner(BaseValidationRunner):
         )
         metrics_all.to_parquet(sentinel, index=False)
 
-        city_summary = summarize_raster_city(dataset_id, metrics_all)
+        city_summary = summarize_raster_city(
+            dataset_id,
+            metrics_all,
+            n_ref_buildings=n_ref_buildings,
+            aoi_area_km2=aoi_area_km2,
+            buildings_per_km2=buildings_per_km2,
+            avg_building_size_m2=avg_building_size_m2,
+        )
         city_summary.to_parquet(
             metrics_dir / "raster_city_summary_all_datasets.parquet",
             index=False,
@@ -207,7 +221,8 @@ class RasterValidationRunner(BaseValidationRunner):
         which raster validation needs for the AOI mask.
         Returns (tiles, aoi_union, crs).
         """
-        from src.utils import get_projected_crs, make_tiles
+        from src.utils.geometry import get_projected_crs
+        from src.utils.tiling import make_tiles
 
         crs = get_projected_crs(ds["aoi"])
         aoi_proj = ds["aoi"].to_crs(crs)

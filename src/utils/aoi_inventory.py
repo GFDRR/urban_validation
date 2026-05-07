@@ -132,24 +132,31 @@ def _load_aois_from_csv(config) -> List[Dict]:
             print(f"Dataset {dataset_id}: empty AOI after loading, skipping.")
             continue
 
-        # Build the dissolved union (existing behaviour)
-        combined = gpd.GeoDataFrame(
-            pd.concat(parts_gdf, ignore_index=True), crs=parts_gdf[0].crs
-        )
-        aoi = combined.dissolve().reset_index(drop=True) if len(combined) > 1 else combined
+        try:
+            # Build the dissolved union (existing behaviour)
+            combined = gpd.GeoDataFrame(
+                pd.concat(parts_gdf, ignore_index=True), crs=parts_gdf[0].crs
+            )
+            aoi = combined.dissolve().reset_index(drop=True) if len(combined) > 1 else combined
 
-        if aoi.empty:
-            print(f"Dataset {dataset_id}: empty AOI after dissolve, skipping.")
+            if aoi.empty:
+                print(f"Dataset {dataset_id}: empty AOI after dissolve, skipping.")
+                continue
+
+            slug = dataset_id.replace("-", "_").replace(" ", "_")
+            datasets.append({
+                "id":           dataset_id,
+                "slug":         slug,
+                "aoi":          aoi,
+                "sub_aois":     sub_aois,
+                "is_multi_aoi": len(sub_aois) > 1,
+            })
+        except Exception as exc:
+            log.warning(
+                "Dataset %s: failed to dissolve / assemble AOI (%s); skipping.",
+                dataset_id, exc,
+            )
             continue
-
-        slug = dataset_id.replace("-", "_").replace(" ", "_")
-        datasets.append({
-            "id":           dataset_id,
-            "slug":         slug,
-            "aoi":          aoi,
-            "sub_aois":     sub_aois,
-            "is_multi_aoi": len(sub_aois) > 1,
-        })
 
     return datasets
 
@@ -380,35 +387,48 @@ def load_validation_datasets(cfg: dict, data_dir: Path) -> List[Dict]:
             log.warning("Validation | %s: empty AOI after loading, skipping.", dataset_id)
             continue
 
-        combined = gpd.GeoDataFrame(
-            pd.concat(parts_gdf, ignore_index=True), crs=parts_gdf[0].crs
-        )
-        aoi = combined.dissolve().reset_index(drop=True) if len(combined) > 1 else combined
+        try:
+            combined = gpd.GeoDataFrame(
+                pd.concat(parts_gdf, ignore_index=True), crs=parts_gdf[0].crs
+            )
+            aoi = combined.dissolve().reset_index(drop=True) if len(combined) > 1 else combined
 
-        # Resolve reference file path(s) — the tracker cell may contain a
-        # pipe-separated list for multi-AOI datasets (e.g. bgd-rohingya).
-        ref_paths: List[Path] = []
-        if ref_col:
-            for _, row in group.iterrows():
-                raw_ref = str(row.get(ref_col, "") or "")
-                for part in raw_ref.split("|"):
-                    part = part.strip()
-                    if part:
-                        p = data_dir / dataset_id / "vector" / part
-                        if p not in ref_paths:
-                            ref_paths.append(p)
+            if aoi.empty:
+                log.warning(
+                    "Validation | %s: empty AOI after dissolve, skipping.", dataset_id
+                )
+                continue
 
-        slug = dataset_id.replace("-", "_").replace(" ", "_")
-        datasets.append({
-            "id":           dataset_id,
-            "slug":         slug,
-            "aoi":          aoi,
-            "sub_aois":     sub_aois,
-            "is_multi_aoi": len(sub_aois) > 1,
-            "ref_paths":    ref_paths,
-            # Back-compat: single-file ref as before; None for multi-file cases
-            "ref_path":     ref_paths[0] if len(ref_paths) == 1 else None,
-        })
+            # Resolve reference file path(s) — the tracker cell may contain a
+            # pipe-separated list for multi-AOI datasets (e.g. bgd-rohingya).
+            ref_paths: List[Path] = []
+            if ref_col:
+                for _, row in group.iterrows():
+                    raw_ref = str(row.get(ref_col, "") or "")
+                    for part in raw_ref.split("|"):
+                        part = part.strip()
+                        if part:
+                            p = data_dir / dataset_id / "vector" / part
+                            if p not in ref_paths:
+                                ref_paths.append(p)
+
+            slug = dataset_id.replace("-", "_").replace(" ", "_")
+            datasets.append({
+                "id":           dataset_id,
+                "slug":         slug,
+                "aoi":          aoi,
+                "sub_aois":     sub_aois,
+                "is_multi_aoi": len(sub_aois) > 1,
+                "ref_paths":    ref_paths,
+                # Back-compat: single-file ref as before; None for multi-file cases
+                "ref_path":     ref_paths[0] if len(ref_paths) == 1 else None,
+            })
+        except Exception as exc:
+            log.warning(
+                "Validation | %s: failed to dissolve / assemble AOI (%s); skipping.",
+                dataset_id, exc,
+            )
+            continue
 
     log.info("Loaded %d dataset(s) for validation.", len(datasets))
     return datasets

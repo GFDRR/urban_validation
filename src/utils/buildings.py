@@ -26,6 +26,32 @@ log = logging.getLogger(__name__)
 _AREA_CHUNK_SIZE = int(os.environ.get("AREA_CHUNK_SIZE", 50_000))
 
 
+def _read_buildings_file(path: Path, logger=None) -> gpd.GeoDataFrame:
+    if path.suffix.lower() in {".parquet", ".geoparquet"}:
+        return gpd.read_parquet(path)
+    try:
+        return gpd.read_file(path)
+    except Exception as exc:
+        msg = str(exc)
+        if not any(k in msg for k in ("LinearRing", "GEOSException", "IllegalArgument", "WKB", "WKT")):
+            raise
+        warn = f"[{path.name}] Geometry parse error ({exc}); retrying with on_invalid='ignore'."
+        if logger:
+            logger.warning(warn)
+        else:
+            print(warn)
+        gdf = gpd.read_file(path, on_invalid="ignore")
+        n_null = int(gdf.geometry.isna().sum())
+        if n_null:
+            drop_msg = f"[{path.name}] Dropped {n_null} unparseable geometry/ies."
+            if logger:
+                logger.warning(drop_msg)
+            else:
+                print(drop_msg)
+            gdf = gdf[gdf.geometry.notna()].copy()
+        return gdf
+
+
 def load_buildings(
     path: Union[str, Path],
     *,
@@ -39,8 +65,7 @@ def load_buildings(
     Load building footprints, reproject, compute area, filter by min area.
     """
     path = Path(path)
-    gdf = (gpd.read_parquet(path) if path.suffix.lower() in {".parquet", ".geoparquet"}
-           else gpd.read_file(path))
+    gdf = _read_buildings_file(path, logger=logger)
 
     if gdf.crs is None:
         raise ValueError(f"{path} has no CRS defined.")
@@ -114,9 +139,17 @@ def load_aoi(
     crs_out: str = "EPSG:4326",
     buffer_meters: float = 0.0,
     dissolve: bool = False,
+    fix_invalid_geoms: bool = True,
     logger=None,
 ) -> gpd.GeoDataFrame:
-    """Load an AOI vector, optionally buffer (in metric CRS), dissolve, and reproject."""
+    """Load an AOI vector, optionally repair invalid geometries, buffer
+    (in metric CRS), dissolve, and reproject.
+
+    fix_invalid_geoms is on by default because AOIs are commonly digitised
+    in GIS tools that produce self-intersecting rings, and an unrepaired
+    geometry will fail at dissolve / union_all time with a
+    TopologyException.
+    """
     path = Path(path)
     aoi = _read_gdf(path)
 
@@ -124,6 +157,9 @@ def load_aoi(
         if logger:
             logger.warning("AOI CRS missing; assuming %s", crs_out)
         aoi = aoi.set_crs("EPSG:4326")
+
+    if fix_invalid_geoms:
+        aoi = validate_aoi_geometry(aoi, label=path.name)
 
     if dissolve and len(aoi) > 1:
         aoi = aoi.dissolve().reset_index(drop=True)

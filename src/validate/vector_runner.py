@@ -17,20 +17,18 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
-from src.metrics.metrics import compute_tile_metrics
+from src.metrics.vector.tile_metrics import compute_tile_metrics
 from src.metrics.vector.size_metrics import (
     aoi_area_km2,
     compute_city_density_summary,
     compute_size_bin_metrics,
 )
 from src.plots.output import purge_matplotlib, summarize_city
-from src.utils import (
-    load_buildings,
-    log_memory,
-    subset_by_tile,
-)
+from src.utils.buildings import load_buildings
+from src.utils.memory import log_memory
+from src.utils.tiling import subset_by_tile
 from src.validate.base import BaseValidationRunner
-from src.validate.figures import VectorFigureGenerator
+from src.plots.figures import VectorFigureGenerator
 from src.validate.match_writer import MatchChunkWriter
 
 log = logging.getLogger("UrbanValidator.vector")

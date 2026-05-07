@@ -1,20 +1,9 @@
 """
 Validate package for the Global Satellite Derived Urban Dataset Validation pipeline.
 
-Exposes runner classes for vector and raster validation along with their
-shared base class and supporting helpers.
+Contains runners for vector and raster validation along with supporting utilities:
+- src.validate.base          - BaseValidationRunner base class
+- src.validate.vector_runner - VectorValidationRunner orchestrator
+- src.validate.raster_runner - RasterValidationRunner orchestrator
+- src.validate.match_writer  - MatchChunkWriter for efficient per-tile match buffering
 """
-from src.validate.base import BaseValidationRunner
-from src.validate.match_writer import MatchChunkWriter
-from src.validate.vector_runner import VectorValidationRunner
-from src.validate.raster_runner import RasterValidationRunner
-from src.plots.figures import VectorFigureGenerator, RasterFigureGenerator
-
-__all__ = [
-    "BaseValidationRunner",
-    "MatchChunkWriter",
-    "VectorValidationRunner",
-    "RasterValidationRunner",
-    "VectorFigureGenerator",
-    "RasterFigureGenerator",
-]

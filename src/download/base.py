@@ -18,10 +18,8 @@ import geopandas as gpd
 from shapely import wkb
 from shapely.geometry import mapping
 
-from src.utils import (
-    mask_raster_to_sub_aois,
-    tag_buildings_with_sub_aoi,
-)
+from src.utils.raster_io import mask_raster_to_sub_aois
+from src.utils.aoi_inventory import tag_buildings_with_sub_aoi
 
 log = logging.getLogger("UrbanDownloader.runner")
 

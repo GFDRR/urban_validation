@@ -22,12 +22,10 @@ from typing import List, Optional, Tuple
 import geopandas as gpd
 import pandas as pd
 
-from src.utils import (
-    get_projected_crs,
-    load_buildings,
-    log_memory,
-    make_tiles,
-)
+from src.utils.geometry import get_projected_crs
+from src.utils.buildings import load_buildings
+from src.utils.memory import log_memory
+from src.utils.tiling import make_tiles
 
 log = logging.getLogger("UrbanValidator.runner")
 

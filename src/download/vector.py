@@ -15,7 +15,7 @@ import geopandas as gpd
 import pandas as pd
 
 from src.download.base import BaseVectorRunner
-from src.utils import (
+from src.utils.glopfp import (
     download_globfp_grid_tile,
     ensure_world_grid,
     get_grid_ids_for_geometry,

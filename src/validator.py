@@ -18,7 +18,7 @@ from typing import Dict
 
 import yaml
 
-from src.utils import load_validation_datasets
+from src.utils.aoi_inventory import load_validation_datasets
 from src.validate.vector_runner import VectorValidationRunner
 from src.validate.raster_runner import RasterValidationRunner
 

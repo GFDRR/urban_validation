@@ -35,11 +35,9 @@ from src.download.raster import (
     GHSLRunner,
     WSFTrackerRunner,
 )
-from src.utils import (
-    init_earth_engine,
-    load_all_aois,
-    resolve_out_root,
-)
+from src.utils.ee_utils import init_earth_engine
+from src.utils.aoi_inventory import load_all_aois
+from src.utils.tiling import resolve_out_root
 
 logging.basicConfig(
     level=logging.INFO,

@@ -28,9 +28,11 @@ from src.utils.wsf_utils import (
     index_wsf_tracker_tiles,
     mosaic_and_clip_wsf_tracker,
 )
-from src.utils import (
+from src.utils.geometry import (
     _shapely_to_geojson_dict,
     aoi_gdf_to_ee_geometry,
+)
+from src.utils.raster_io import (
     download_file,
     get_tile_url_col,
     reproject_to_4326,

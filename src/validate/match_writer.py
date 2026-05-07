@@ -15,7 +15,7 @@ from typing import List
 
 import pandas as pd
 
-from src.utils import consolidate_match_chunks
+from src.utils.matches import consolidate_match_chunks
 
 
 class MatchChunkWriter:

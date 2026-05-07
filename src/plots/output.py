@@ -273,7 +273,15 @@ def plot_iou_per_building_sizes(
         del size_stats
 
 # raster output 
-def summarize_raster_city(city: str, metrics_tiles: pd.DataFrame) -> pd.DataFrame:
+def summarize_raster_city(
+    city: str,
+    metrics_tiles: pd.DataFrame,
+    *,
+    n_ref_buildings: int = 0,
+    aoi_area_km2: float = float("nan"),
+    buildings_per_km2: float = float("nan"),
+    avg_building_size_m2: float = float("nan"),
+) -> pd.DataFrame:
     """
     Aggregate tile-level raster metrics into one summary row per dataset and grid.
     """
@@ -328,6 +336,10 @@ def summarize_raster_city(city: str, metrics_tiles: pd.DataFrame) -> pd.DataFram
             "dataset": key_map["dataset"],
             "grid": key_map.get("grid", None),
             "resolution_m": key_map.get("resolution_m", None),
+            "n_ref_buildings": n_ref_buildings,
+            "aoi_area_km2": round(aoi_area_km2, 4) if np.isfinite(aoi_area_km2) else float("nan"),
+            "buildings_per_km2": round(buildings_per_km2, 2) if np.isfinite(buildings_per_km2) else float("nan"),
+            "avg_building_size_m2": round(avg_building_size_m2, 2) if np.isfinite(avg_building_size_m2) else float("nan"),
             "n_tiles": int(g["tile_id"].nunique()),
             "valid_area_total_m2": valid_area_total_m2,
             "ref_area_total_m2": ref_area_total_m2,

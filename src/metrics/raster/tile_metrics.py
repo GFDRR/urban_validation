@@ -37,7 +37,7 @@ from src.metrics.raster.rasterize import (
     _pixel_area_from_transform,
     _rasterize_ref_fraction,
 )
-from src.utils import subset_by_tile
+from src.utils.tiling import subset_by_tile
 
 logger = logging.getLogger("Validation_Metrics")
 
