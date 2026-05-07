@@ -38,8 +38,6 @@ raster:
     evaluation_grids:
       - name: 10m
         resolution: 10
-      - name: 37.6m
-        resolution: 37.6
       - name: 100m
         resolution: 100
 
