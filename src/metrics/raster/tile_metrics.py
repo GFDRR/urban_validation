@@ -49,7 +49,7 @@ def compute_raster_tile_metrics(
     ref_sindex,
     aoi_union,
     tiles: gpd.GeoDataFrame,
-    tau_frac: float,
+    min_building_m2: float,
     default_oversample: int = 4,
     default_all_touched: bool = False,
     evaluation_grids: Optional[List[dict]] = None,
@@ -63,6 +63,12 @@ def compute_raster_tile_metrics(
       1. Read/reproject candidate raster onto the target grid.
       2. Rasterize reference polygons onto the same target grid.
       3. Compute binary and area-based metrics.
+
+    The reference and prediction binarization threshold adapts to each
+    evaluation grid: tau_frac = min_building_m2 / pixel_area_m2. This
+    means "a pixel is built if it contains at least one minimum-detectable
+    building's worth of area" — at 10 m (100 m² pixel, min=20 m²) this
+    gives 0.20; at 100 m (10 000 m² pixel) it gives 0.002.
 
     Returns one row per (tile, grid).
     """
@@ -124,6 +130,7 @@ def compute_raster_tile_metrics(
 
                 transform, out_shape = _make_grid_aligned_transform(geom.bounds, resolution)
                 pixel_area = _pixel_area_from_transform(transform)
+                tau_frac = min(1.0, min_building_m2 / pixel_area)
 
                 fill = float(nodata) if nodata is not None else np.nan
 

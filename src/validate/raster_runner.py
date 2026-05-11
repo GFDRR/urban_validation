@@ -41,7 +41,7 @@ class RasterValidationRunner(BaseValidationRunner):
 
         # Raster preprocessing config
         rast_pre = rast_cfg.get("preprocessing", {})
-        tau_frac = float(rast_pre.get("tau_frac", 0.2))
+        min_building_m2 = float(rast_pre.get("min_building_m2", 20.0))
         oversample = int(rast_pre.get("oversample_factor", 4))
         all_touched = bool(rast_pre.get("all_touched", False))
         evaluation_grids = rast_pre.get("evaluation_grids", None)
@@ -143,7 +143,7 @@ class RasterValidationRunner(BaseValidationRunner):
                     aoi_union=aoi_union,
                     tiles=tiles,
                     metrics_dir=metrics_dir,
-                    tau_frac=tau_frac,
+                    min_building_m2=min_building_m2,
                     oversample=oversample,
                     all_touched=all_touched,
                     evaluation_grids=evaluation_grids,
@@ -243,7 +243,7 @@ class RasterValidationRunner(BaseValidationRunner):
         aoi_union,
         tiles: gpd.GeoDataFrame,
         metrics_dir: Path,
-        tau_frac: float,
+        min_building_m2: float,
         oversample: int,
         all_touched: bool,
         evaluation_grids: Optional[List[dict]] = None,
@@ -257,7 +257,7 @@ class RasterValidationRunner(BaseValidationRunner):
             ref_sindex=ref_sindex,
             aoi_union=aoi_union,
             tiles=tiles,
-            tau_frac=tau_frac,
+            min_building_m2=min_building_m2,
             default_oversample=oversample,
             default_all_touched=all_touched,
             evaluation_grids=evaluation_grids,
