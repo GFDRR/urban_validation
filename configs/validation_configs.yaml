@@ -31,7 +31,7 @@ vector:
 
 raster:
   preprocessing:
-    tau_frac: 0.2
+    min_building_m2: 20.0
     oversample_factor: 4
     all_touched: false
 
