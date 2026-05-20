@@ -165,9 +165,11 @@ This code repository and corresponding datasets are distributed under the MIT Li
 
 ## Contributors
 Rufai Omowunmi Balogun,
-Caroline Gevaert,
-Derrick Mirindi,
-Pierre Chrzanowski,
+Caroline Margaux Gevaert, 
+Derrick Mirindi, 
+Aaron Opdyke,
+Capucine Anne Veronique Riom, 
+Pierre Chrzanowski1, and Edward Charles Anderson1
 
 ## Acknowledgment
 GFDRR, World Bank,
