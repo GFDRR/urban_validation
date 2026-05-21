@@ -18,14 +18,13 @@ def predicted_area_from_raster(arr: np.ndarray, transform: Affine, spec: dict) -
     """Convert raster values to predicted built-up area per pixel (m²).
 
     Supported spec["method"] values:
-      wsf_tracker          — categorical time-bin codes; built if built_value_min ≤ code ≤ as_of_code
-      wsf_tracker_fraction — pre-averaged WSF built fraction [0,1]; treated identically to fraction
-      fraction             — values in [0, 1]; area = fraction × pixel_area
-      percent              — values in [0, 100]; area = (v/100) × pixel_area
-      area_m2              — values already in m²; optionally clamped to pixel_area
-      binary               — built if value ≥ threshold
-      nonzero              — built if value ≠ 0
-      value_in             — built if value in spec["values"]
+      wsf_tracker — categorical time-bin codes; built if built_value_min ≤ code ≤ as_of_code
+      fraction    — values in [0, 1]; area = fraction × pixel_area
+      percent     — values in [0, 100]; area = (v/100) × pixel_area
+      area_m2     — values already in m²; optionally clamped to pixel_area
+      binary      — built if value ≥ threshold
+      nonzero     — built if value ≠ 0
+      value_in    — built if value in spec["values"]
     """
     method = spec.get("method", "fraction")
     pixel_area = _pixel_area_from_transform(transform)
@@ -46,7 +45,7 @@ def predicted_area_from_raster(arr: np.ndarray, transform: Affine, spec: dict) -
         ) / 100.0
         return np.clip(frac, 0.0, 1.0) * pixel_area
 
-    if method in {"fraction", "wsf_tracker_fraction"}:
+    if method == "fraction":
         frac = np.clip(
             arr_f,
             float(spec.get("clamp_min", 0.0)),
@@ -80,8 +79,8 @@ def pred_bin_from_pred_area(
 ) -> np.ndarray:
     """Binary built/not-built mask from predicted area.
 
-    Per-dataset threshold_frac overrides the global tau_frac.
-    Categorical/binary methods use A_pred > 0 directly.
+    Per-dataset threshold_frac overrides tau_frac.
+    Categorical/binary methods use A_pred > 0 directly (no threshold needed).
     """
     pixel_area = _pixel_area_from_transform(transform)
     tau = spec.get("threshold_frac", None)

@@ -135,6 +135,10 @@ class RasterValidationRunner(BaseValidationRunner):
                 dataset_id, ds_label, cand_path.name,
             )
 
+            ds_min_building_m2 = float(
+                cand_cfg.get("min_building_m2", min_building_m2)
+            )
+
             try:
                 tile_path = self._run_candidate(
                     dataset_id=dataset_id,
@@ -146,7 +150,7 @@ class RasterValidationRunner(BaseValidationRunner):
                     aoi_union=aoi_union,
                     tiles=tiles,
                     metrics_dir=metrics_dir,
-                    min_building_m2=min_building_m2,
+                    min_building_m2=ds_min_building_m2,
                     oversample=oversample,
                     all_touched=all_touched,
                     evaluation_grids=evaluation_grids,

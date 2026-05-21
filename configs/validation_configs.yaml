@@ -55,6 +55,7 @@ raster:
   datasets:
     - name: obt
       native_resolution_m: 4.0
+      min_building_m2: 4.0
       label: Google OBT
       enabled: true
       year: 2023
@@ -68,6 +69,7 @@ raster:
 
     - name: tempo
       native_resolution_m: 100
+      min_building_m2: 20.0
       label: Microsoft TEMPO
       enabled: true
       year: 2023q4
@@ -83,6 +85,7 @@ raster:
 
     - name: ghsl_built_s
       native_resolution_m: 100
+      min_building_m2: 20.0
       label: GHS Built-S
       enabled: true
       year: 2025
@@ -96,10 +99,11 @@ raster:
 
     - name: wsf_tracker
       native_resolution_m: 10
+      min_building_m2: 20.0
       label: WSF Tracker
       enabled: true
       binarize:
-        method: wsf_tracker_fraction
+        method: wsf_tracker
         band: 1
         built_value_min: 1
         as_of_code: 19
