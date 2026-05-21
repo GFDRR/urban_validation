@@ -120,6 +120,37 @@ def _reproject_area_to_grid(
     return dst * (eval_pixel_area / native_pixel_area)
 
 
+def _block_average_binary_to_grid(
+    binary_arr: np.ndarray,
+    valid_mask: np.ndarray,
+    src_transform: Affine,
+    src_crs,
+    dst_shape: tuple,
+    dst_transform: Affine,
+    dst_crs,
+) -> np.ndarray:
+    """Block-average a binary native mask to an evaluation grid.
+
+    Returns the fraction of built native pixels per eval cell in [0, 1].
+    Invalid native pixels (valid_mask=False) are excluded from the average
+    so coverage edges do not bias the result toward zero.
+    """
+    src = np.where(valid_mask, binary_arr.astype("float32"), np.nan)
+    dst = np.zeros(dst_shape, dtype="float32")
+    reproject(
+        source=src,
+        destination=dst,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        src_nodata=np.nan,
+        dst_transform=dst_transform,
+        dst_crs=dst_crs,
+        dst_nodata=0.0,
+        resampling=Resampling.average,
+    )
+    return dst
+
+
 def _reproject_binary_to_grid(
     binary_arr: np.ndarray,
     src_transform: Affine,

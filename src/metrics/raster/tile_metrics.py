@@ -28,6 +28,7 @@ from src.metrics.raster.grids import (
     _normalize_evaluation_grids,
 )
 from src.metrics.raster.io import (
+    _block_average_binary_to_grid,
     _open_raster_in_crs,
     _read_reprojected_tile,
     _reproject_area_to_grid,
@@ -52,6 +53,7 @@ def compute_raster_tile_metrics(
     aoi_union,
     tiles: gpd.GeoDataFrame,
     min_building_m2: float,
+    ref_min_building_m2: float,
     default_oversample: int = 4,
     default_all_touched: bool = False,
     evaluation_grids: Optional[List[dict]] = None,
@@ -63,13 +65,28 @@ def compute_raster_tile_metrics(
 
     For each tile:
       1. Read the candidate raster at native resolution.
-      2. Binarize at native resolution: tau_frac_native = min_building_m2 / native_pixel_area.
-         Categorical methods (wsf_tracker, binary, nonzero, value_in) bypass tau_frac
-         and use A_pred > 0 directly.
-      3. Reproject the binary mask to each evaluation grid using nearest-neighbor.
+      2. Binarize at native resolution using the per-dataset threshold:
+           tau_frac_native = min_building_m2 / native_pixel_area.
+         Categorical methods (wsf_tracker, binary, nonzero, value_in) bypass
+         tau_frac and use A_pred > 0 directly.
+      3. Block-average the binary mask to each evaluation grid (fraction of built
+         native pixels per eval cell), then threshold at tau_frac = ref_min_building_m2
+         / eval_pixel_area — the same threshold applied to the reference side.
       4. Rasterize reference polygons onto the evaluation grid (fractional coverage).
-         Reference binarization uses tau_frac = min_building_m2 / eval_pixel_area.
+         Reference binarization uses the global threshold:
+           tau_frac = ref_min_building_m2 / eval_pixel_area.
+         This keeps the reference definition of "built" consistent across all
+         dataset comparisons at the same evaluation grid.
       5. Compute binary and area-based metrics.
+
+    Parameters
+    ----------
+    min_building_m2 : float
+        Per-dataset minimum detectable building size (m²). Controls prediction
+        binarization at native resolution.
+    ref_min_building_m2 : float
+        Global minimum building size (m²) for reference binarization at the
+        evaluation grid. Fixed across all datasets so comparisons are consistent.
 
     Returns one row per (tile, grid).
     """
@@ -188,18 +205,22 @@ def compute_raster_tile_metrics(
 
                 transform, out_shape = _make_grid_aligned_transform(geom.bounds, resolution)
                 pixel_area = _pixel_area_from_transform(transform)
-                tau_frac = min(1.0, min_building_m2 / pixel_area)
+                tau_frac = min(1.0, ref_min_building_m2 / pixel_area)
 
                 try:
-                    # Step 3: Reproject binary mask to evaluation grid with nearest-neighbor.
-                    pred_bin = _reproject_binary_to_grid(
+                    # Step 3: Block-average binary mask to eval grid, then threshold.
+                    # tau_frac is ref_min_building_m2 / eval_pixel_area — the same
+                    # threshold used for ref_bin, making both sides symmetric.
+                    pred_frac_at_eval = _block_average_binary_to_grid(
                         pred_bin_native,
+                        native_valid,
                         src_transform=native_transform,
                         src_crs=tiles.crs,
                         dst_shape=out_shape,
                         dst_transform=transform,
                         dst_crs=tiles.crs,
-                    ).astype(bool)
+                    )
+                    pred_bin = pred_frac_at_eval >= tau_frac
 
                     native_valid_at_eval = _reproject_binary_to_grid(
                         native_valid,
@@ -333,7 +354,7 @@ def compute_raster_tile_metrics(
                         }
                     )
 
-                    del pred_bin, A_pred_eval, ref_frac, ref_bin, A_ref
+                    del pred_bin, pred_frac_at_eval, A_pred_eval, ref_frac, ref_bin, A_ref
                     del valid, native_valid_at_eval, aoi_mask, tile_mask
 
                 except Exception as exc:
