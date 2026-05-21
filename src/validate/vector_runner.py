@@ -68,6 +68,9 @@ class VectorValidationRunner(BaseValidationRunner):
         )
 
         overwrite, dpi, fmt = self._read_output_cfg()
+        show_count_plots = bool(
+            self.cfg.get("vector", {}).get("reporting", {}).get("derive_counts", True)
+        )
 
         metrics_dir, figures_dir = self._setup_output_dirs(dataset_id)
         if self._is_already_complete(metrics_dir, dataset_id, overwrite):
@@ -175,7 +178,7 @@ class VectorValidationRunner(BaseValidationRunner):
             metrics_dir / "vector_matches_all_datasets.parquet", index=False
         )
 
-        city_summary = summarize_city(dataset_id, metrics_all, matches_all)
+        city_summary = summarize_city(dataset_id, metrics_all, matches_all, aoi_area_km2=aoi_km2)
         city_summary.to_parquet(
             metrics_dir / "vector_city_summary_all_datasets.parquet", index=False
         )
@@ -183,7 +186,6 @@ class VectorValidationRunner(BaseValidationRunner):
             metrics_dir / "vector_city_summary_all_datasets.csv", index=False
         )
         log.info("[%s] City summary saved.", dataset_id)
-        del city_summary
 
         # Combined per-(city,dataset,size_bin) metrics
         if per_ds_size_bin_paths:
@@ -225,13 +227,15 @@ class VectorValidationRunner(BaseValidationRunner):
                 dataset_id=dataset_id,
                 metrics_all=metrics_all,
                 matches_all=matches_all,
+                city_summary=city_summary,
                 tiles=tiles,
                 figures_dir=figures_dir,
+                show_count_plots=show_count_plots,
             )
         finally:
             purge_matplotlib()
 
-        del metrics_all, matches_all, tiles
+        del city_summary, metrics_all, matches_all, tiles
         gc.collect()
         log_memory(f"{dataset_id} end")
         log.info("[%s] ✓ Complete.", dataset_id)

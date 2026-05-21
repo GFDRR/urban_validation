@@ -10,6 +10,8 @@ import pandas as pd
 import geopandas as gpd
 import seaborn as sns
 
+from src.utils.aggregation import aggregate_weighted
+
 try:
     from matplotlib._pylab_helpers import Gcf
 except ImportError:
@@ -38,6 +40,7 @@ def summarize_city(
     city: str,
     metrics_df: pd.DataFrame,
     matches_df: pd.DataFrame,
+    aoi_area_km2: float = float("nan"),
 ) -> pd.DataFrame:
     """Aggregate tile-level metrics and match statistics into one row per dataset."""
     rows = []
@@ -51,6 +54,22 @@ def summarize_city(
         precision = tp / (tp + fp) if (tp + fp) else 0.0
         recall    = tp / (tp + fn) if (tp + fn) else 0.0
         f1        = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+
+        count_delta_total = n_cand - n_ref
+        count_ratio_total = n_cand / n_ref if n_ref > 0 else float("nan")
+        rel_count_delta_total = count_delta_total / n_ref if n_ref > 0 else float("nan")
+        ref_density_per_km2 = n_ref / aoi_area_km2 if np.isfinite(aoi_area_km2) and aoi_area_km2 > 0 else float("nan")
+        cand_density_per_km2 = n_cand / aoi_area_km2 if np.isfinite(aoi_area_km2) and aoi_area_km2 > 0 else float("nan")
+        density_delta_per_km2 = (
+            cand_density_per_km2 - ref_density_per_km2
+            if np.isfinite(cand_density_per_km2) and np.isfinite(ref_density_per_km2)
+            else float("nan")
+        )
+        density_ratio_per_km2 = (
+            cand_density_per_km2 / ref_density_per_km2
+            if np.isfinite(cand_density_per_km2) and np.isfinite(ref_density_per_km2) and ref_density_per_km2 > 0
+            else float("nan")
+        )
 
         dsmatches = (
             matches_df[matches_df["dataset"] == ds]
@@ -92,6 +111,13 @@ def summarize_city(
             "n_tiles":                  int(mds["tile_id"].nunique()),
             "n_ref_total":              n_ref,
             "n_cand_total":             n_cand,
+            "count_delta_total":        count_delta_total,
+            "count_ratio_total":        count_ratio_total,
+            "rel_count_delta_total":    rel_count_delta_total,
+            "ref_density_per_km2":      ref_density_per_km2,
+            "cand_density_per_km2":     cand_density_per_km2,
+            "density_delta_per_km2":    density_delta_per_km2,
+            "density_ratio_per_km2":    density_ratio_per_km2,
             "tp_total":                 tp,
             "fp_total":                 fp,
             "fn_total":                 fn,
@@ -109,6 +135,51 @@ def summarize_city(
         })
 
     return pd.DataFrame(rows)
+
+
+def plot_vector_count_summary(
+    city_summary: pd.DataFrame,
+    figures_dir: Path,
+    city: str,
+    dpi: int = 200,
+    fmt: str = "png",
+) -> None:
+    """Compare reference and candidate building counts at city level."""
+    if city_summary is None or city_summary.empty:
+        return
+
+    plot_df = city_summary.copy().sort_values("dataset")
+    labels = plot_df["dataset"].astype(str).tolist()
+    x = np.arange(len(labels))
+    width = 0.36
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), sharex=True)
+
+    axes[0].bar(x - width / 2, plot_df["n_ref_total"], width=width, label="Reference", color="slateblue")
+    axes[0].bar(x + width / 2, plot_df["n_cand_total"], width=width, label="Candidate", color="darkorange")
+    axes[0].set_title(f"{city} — City-level building counts", fontsize=12, fontweight="bold")
+    axes[0].set_ylabel("Building count")
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(labels, rotation=25, ha="right")
+    axes[0].grid(axis="y", alpha=0.25)
+    axes[0].legend(fontsize=9)
+
+    axes[1].bar(x, plot_df["count_delta_total"], color="steelblue")
+    axes[1].axhline(0, color="grey", linestyle="--", linewidth=0.9)
+    axes[1].set_title("Candidate minus reference", fontsize=12, fontweight="bold")
+    axes[1].set_ylabel("Count delta")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(labels, rotation=25, ha="right")
+    axes[1].grid(axis="y", alpha=0.25)
+
+    for idx, value in enumerate(plot_df["rel_count_delta_total"]):
+        if pd.notna(value):
+            axes[1].text(idx, plot_df["count_delta_total"].iloc[idx], f"{value:.0%}", ha="center", va="bottom", fontsize=8)
+
+    sns.despine()
+    fig.tight_layout()
+    save_figure(fig, figures_dir, fig_name(city, "vector_building_counts", fmt), dpi=dpi)
+    plt.close(fig)
 
 
 def tile_f1_box_plot(
@@ -272,6 +343,56 @@ def plot_iou_per_building_sizes(
             plt.close(fig)
         del size_stats
 
+
+def plot_raster_count_summary(
+    city_summary: pd.DataFrame,
+    figures_dir: Path,
+    city: str,
+    dpi: int = 200,
+    fmt: str = "png",
+) -> None:
+    """Compare predicted and reference building counts for raster outputs."""
+    if city_summary is None or city_summary.empty:
+        return
+
+    plot_df = city_summary.copy().sort_values([c for c in ["dataset", "grid", "resolution_m"] if c in city_summary.columns])
+    labels = plot_df.apply(
+        lambda row: " | ".join(
+            str(row[col]) for col in ["dataset", "grid"] if col in plot_df.columns and pd.notna(row[col])
+        ),
+        axis=1,
+    ).tolist()
+    x = np.arange(len(labels))
+    width = 0.36
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), sharex=True)
+
+    axes[0].bar(x - width / 2, plot_df["ref_building_count"], width=width, label="Reference", color="slateblue")
+    axes[0].bar(x + width / 2, plot_df["pred_building_count"], width=width, label="Predicted", color="darkorange")
+    axes[0].set_title(f"{city} — Raster building counts", fontsize=12, fontweight="bold")
+    axes[0].set_ylabel("Building count")
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(labels, rotation=25, ha="right")
+    axes[0].grid(axis="y", alpha=0.25)
+    axes[0].legend(fontsize=9)
+
+    axes[1].bar(x, plot_df["delta_building_count"], color="steelblue")
+    axes[1].axhline(0, color="grey", linestyle="--", linewidth=0.9)
+    axes[1].set_title("Predicted minus reference", fontsize=12, fontweight="bold")
+    axes[1].set_ylabel("Count delta")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(labels, rotation=25, ha="right")
+    axes[1].grid(axis="y", alpha=0.25)
+
+    for idx, value in enumerate(plot_df["rel_delta_building_count"]):
+        if pd.notna(value):
+            axes[1].text(idx, plot_df["delta_building_count"].iloc[idx], f"{value:.0%}", ha="center", va="bottom", fontsize=8)
+
+    sns.despine()
+    fig.tight_layout()
+    save_figure(fig, figures_dir, fig_name(city, "raster_building_counts", fmt), dpi=dpi)
+    plt.close(fig)
+
 # raster output 
 def summarize_raster_city(
     city: str,
@@ -293,11 +414,35 @@ def summarize_raster_city(
     if "resolution_m" in metrics_tiles.columns:
         group_cols.append("resolution_m")
 
+    weighted_cols = [
+        "precision",
+        "recall",
+        "f1",
+        "rel_area_error",
+        "signed_area_bias",
+        "quantity_disagreement",
+        "allocation_disagreement",
+    ]
+    weighted_lookup = {}
+    weighted_df = aggregate_weighted(
+        metrics_tiles,
+        metric_cols=weighted_cols,
+        weight_col="valid_area_m2",
+        groupby_cols=group_cols,
+    )
+    if not weighted_df.empty:
+        weighted_lookup = {
+            tuple(row[col] for col in group_cols): row
+            for _, row in weighted_df.iterrows()
+        }
+
     for keys, g in metrics_tiles.groupby(group_cols):
         if isinstance(keys, tuple):
             key_map = dict(zip(group_cols, keys))
         else:
             key_map = {group_cols[0]: keys}
+        key_tuple = tuple(key_map[col] for col in group_cols)
+        weighted_row = weighted_lookup.get(key_tuple)
 
         tp = int(g["tp"].sum())
         fp = int(g["fp"].sum())
@@ -322,6 +467,22 @@ def summarize_raster_city(
 
         ref_area_total_m2 = float(g["ref_area_m2"].dropna().sum()) if "ref_area_m2" in g.columns else np.nan
         pred_area_total_m2 = float(g["pred_area_m2"].dropna().sum()) if "pred_area_m2" in g.columns else np.nan
+        ref_building_count = float(n_ref_buildings)
+        pred_building_count = (
+            (pred_area_total_m2 / avg_building_size_m2)
+            if np.isfinite(avg_building_size_m2) and avg_building_size_m2 > 0
+            else np.nan
+        )
+        delta_building_count = (
+            pred_building_count - ref_building_count
+            if np.isfinite(pred_building_count)
+            else np.nan
+        )
+        rel_delta_building_count = (
+            delta_building_count / ref_building_count
+            if ref_building_count > 0 and np.isfinite(delta_building_count)
+            else np.nan
+        )
         signed_area_bias = (
             (pred_area_total_m2 - ref_area_total_m2) / ref_area_total_m2
             if np.isfinite(ref_area_total_m2) and ref_area_total_m2 > 0
@@ -340,6 +501,10 @@ def summarize_raster_city(
             "aoi_area_km2": round(aoi_area_km2, 4) if np.isfinite(aoi_area_km2) else float("nan"),
             "buildings_per_km2": round(buildings_per_km2, 2) if np.isfinite(buildings_per_km2) else float("nan"),
             "avg_building_size_m2": round(avg_building_size_m2, 2) if np.isfinite(avg_building_size_m2) else float("nan"),
+            "ref_building_count": ref_building_count,
+            "pred_building_count": pred_building_count,
+            "delta_building_count": delta_building_count,
+            "rel_delta_building_count": rel_delta_building_count,
             "n_tiles": int(g["tile_id"].nunique()),
             "valid_area_total_m2": valid_area_total_m2,
             "ref_area_total_m2": ref_area_total_m2,
@@ -357,6 +522,13 @@ def summarize_raster_city(
             "signed_area_bias": _r(signed_area_bias),
             "quantity_disagreement_mean": _r(qd_s.mean()) if len(qd_s) else float("nan"),
             "allocation_disagreement_mean": _r(ad_s.mean()) if len(ad_s) else float("nan"),
+            "precision_weighted_mean": _r(weighted_row["precision"]) if weighted_row is not None and pd.notna(weighted_row["precision"]) else float("nan"),
+            "recall_weighted_mean": _r(weighted_row["recall"]) if weighted_row is not None and pd.notna(weighted_row["recall"]) else float("nan"),
+            "f1_weighted_mean": _r(weighted_row["f1"]) if weighted_row is not None and pd.notna(weighted_row["f1"]) else float("nan"),
+            "rel_area_error_weighted_mean": _r(weighted_row["rel_area_error"]) if weighted_row is not None and pd.notna(weighted_row["rel_area_error"]) else float("nan"),
+            "signed_area_bias_weighted_mean": _r(weighted_row["signed_area_bias"]) if weighted_row is not None and pd.notna(weighted_row["signed_area_bias"]) else float("nan"),
+            "quantity_disagreement_weighted_mean": _r(weighted_row["quantity_disagreement"]) if weighted_row is not None and pd.notna(weighted_row["quantity_disagreement"]) else float("nan"),
+            "allocation_disagreement_weighted_mean": _r(weighted_row["allocation_disagreement"]) if weighted_row is not None and pd.notna(weighted_row["allocation_disagreement"]) else float("nan"),
         }
         rows.append(row)
 

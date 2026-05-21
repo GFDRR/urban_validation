@@ -241,17 +241,47 @@ def compute_city_density_summary(
         mean_area_m2, median_area_m2, p25_area_m2, p75_area_m2
     """
     rows: List[dict] = []
+    ref_n = int(len(ref_areas)) if ref_areas is not None else 0
+    ref_density = (
+        (ref_n / aoi_area_km2_value)
+        if aoi_area_km2_value and aoi_area_km2_value > 0
+        else np.nan
+    )
 
     def _row(source: str, areas: pd.Series) -> dict:
         n = int(len(areas)) if areas is not None else 0
         density = (n / aoi_area_km2_value) if aoi_area_km2_value and aoi_area_km2_value > 0 else np.nan
         stats = _area_stats(areas)
+        count_delta_vs_reference = n - ref_n
+        rel_count_delta_vs_reference = (
+            count_delta_vs_reference / ref_n if ref_n > 0 else np.nan
+        )
+        density_delta_vs_reference = (
+            density - ref_density
+            if np.isfinite(density) and np.isfinite(ref_density)
+            else np.nan
+        )
+        density_ratio_vs_reference = (
+            density / ref_density
+            if np.isfinite(density) and np.isfinite(ref_density) and ref_density > 0
+            else np.nan
+        )
         return {
             "city": dataset_id,
             "source": source,
             "n_buildings": n,
             "aoi_area_km2": float(aoi_area_km2_value) if aoi_area_km2_value is not None else np.nan,
             "density_per_km2": float(density) if not pd.isna(density) else np.nan,
+            "count_delta_vs_reference": float(count_delta_vs_reference),
+            "rel_count_delta_vs_reference": float(rel_count_delta_vs_reference)
+            if not pd.isna(rel_count_delta_vs_reference)
+            else np.nan,
+            "density_delta_vs_reference": float(density_delta_vs_reference)
+            if not pd.isna(density_delta_vs_reference)
+            else np.nan,
+            "density_ratio_vs_reference": float(density_ratio_vs_reference)
+            if not pd.isna(density_ratio_vs_reference)
+            else np.nan,
             **stats,
         }
 

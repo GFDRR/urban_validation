@@ -19,8 +19,10 @@ import pandas as pd
 from src.plots.output import (
     plot_iou_dist,
     plot_iou_per_building_sizes,
+    plot_raster_count_summary,
     plot_raster_rel_area_error_boxplot,
     plot_raster_tile_f1_boxplot,
+    plot_vector_count_summary,
     tile_f1_box_plot,
     tile_f1_spatial_dist,
 )
@@ -42,8 +44,10 @@ class VectorFigureGenerator:
         dataset_id: str,
         metrics_all: pd.DataFrame,
         matches_all: pd.DataFrame,
+        city_summary: pd.DataFrame,
         tiles: gpd.GeoDataFrame,
         figures_dir: Path,
+        show_count_plots: bool = True,
     ) -> None:
         matplotlib.use("Agg")
         city_label = dataset_id.replace("-", " ").title()
@@ -104,6 +108,21 @@ class VectorFigureGenerator:
                     dataset_id, traceback.format_exc(),
                 )
 
+        if show_count_plots:
+            try:
+                plot_vector_count_summary(
+                    city_summary,
+                    figures_dir,
+                    city_label,
+                    dpi=self.dpi,
+                    fmt=self.fmt,
+                )
+            except Exception:
+                log.warning(
+                    "[%s] plot_vector_count_summary failed:\n%s",
+                    dataset_id, traceback.format_exc(),
+                )
+
 
 class RasterFigureGenerator:
     """Generate the standard set of raster validation figures for one city."""
@@ -118,8 +137,10 @@ class RasterFigureGenerator:
         *,
         dataset_id: str,
         metrics_all: pd.DataFrame,
+        city_summary: pd.DataFrame,
         tiles: gpd.GeoDataFrame,
         figures_dir: Path,
+        show_count_plots: bool = True,
     ) -> None:
         matplotlib.use("Agg")
         city_label = dataset_id.replace("-", " ").title()
@@ -155,6 +176,21 @@ class RasterFigureGenerator:
                 "[%s] plot_raster_rel_area_error_boxplot failed:\n%s",
                 dataset_id, traceback.format_exc(),
             )
+
+        if show_count_plots:
+            try:
+                plot_raster_count_summary(
+                    city_summary,
+                    figures_dir,
+                    city_label,
+                    dpi=self.dpi,
+                    fmt=self.fmt,
+                )
+            except Exception:
+                log.warning(
+                    "[%s] plot_raster_count_summary failed:\n%s",
+                    dataset_id, traceback.format_exc(),
+                )
 
         # Spatial maps: one per (dataset, grid) for raster
         try:

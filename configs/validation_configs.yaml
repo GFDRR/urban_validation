@@ -16,6 +16,9 @@ vector:
     tau_boundary: 2.0
     fix_invalid_geoms: true
 
+  reporting:
+    derive_counts: true
+
   datasets:
     - name: overture
       label: Overture Maps
@@ -45,6 +48,9 @@ raster:
       enabled: true
       mode: skip_finer
       tolerance_factor: 0.95
+
+  reporting:
+    derive_counts: true
 
   datasets:
     - name: obt
@@ -93,10 +99,10 @@ raster:
       label: WSF Tracker
       enabled: true
       binarize:
-        method: wsf_tracker
+        method: wsf_tracker_fraction
         band: 1
         built_value_min: 1
-        as_of_code: 18
+        as_of_code: 19
         nonbuilt_value: 0
         nodata: null
       rasterization:

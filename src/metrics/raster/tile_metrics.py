@@ -30,6 +30,7 @@ from src.metrics.raster.grids import (
 from src.metrics.raster.io import (
     _open_raster_in_crs,
     _read_reprojected_tile,
+    _read_wsf_as_built_fraction,
 )
 from src.metrics.raster.rasterize import (
     _aoi_mask_for_window,
@@ -113,6 +114,12 @@ def compute_raster_tile_metrics(
             # Subset reference once per tile, reuse across all evaluation grids
             ref_tile = subset_by_tile(ref_all, ref_sindex, geom)
             ref_geoms = list(ref_tile.geometry.values) if not ref_tile.empty else []
+            ref_building_count = int(len(ref_tile))
+            mean_ref_building_area_m2 = (
+                float(ref_tile["area_m2"].mean())
+                if not ref_tile.empty and "area_m2" in ref_tile.columns
+                else np.nan
+            )
 
             for grid in grids:
                 grid_name = str(grid["name"])
@@ -135,15 +142,27 @@ def compute_raster_tile_metrics(
                 fill = float(nodata) if nodata is not None else np.nan
 
                 try:
-                    arr = _read_reprojected_tile(
-                        src=ds,
-                        band=band,
-                        dst_shape=out_shape,
-                        dst_transform=transform,
-                        dst_crs=tiles.crs,
-                        binarize_spec=bin_spec,
-                        fill_value=fill,
-                    )
+                    if bin_spec.get("method") == "wsf_tracker_fraction":
+                        arr = _read_wsf_as_built_fraction(
+                            src=ds,
+                            band=band,
+                            dst_shape=out_shape,
+                            dst_transform=transform,
+                            dst_crs=tiles.crs,
+                            binarize_spec=bin_spec,
+                            fill_value=fill,
+                            native_resolution_m=float(cand_cfg.get("native_resolution_m", 10.0)),
+                        )
+                    else:
+                        arr = _read_reprojected_tile(
+                            src=ds,
+                            band=band,
+                            dst_shape=out_shape,
+                            dst_transform=transform,
+                            dst_crs=tiles.crs,
+                            binarize_spec=bin_spec,
+                            fill_value=fill,
+                        )
 
                     aoi_mask = _aoi_mask_for_window(
                         aoi_union,
@@ -162,7 +181,7 @@ def compute_raster_tile_metrics(
                     method = bin_spec.get("method", "")
 
                     if nodata is not None:
-                        if method in {"fraction", "percent", "area_m2"}:
+                        if method in {"fraction", "percent", "area_m2", "wsf_tracker_fraction"}:
                             valid &= np.isfinite(arr)
                         else:
                             valid &= (arr != nodata)
@@ -213,6 +232,22 @@ def compute_raster_tile_metrics(
                     ref_area_m2 = float(np.sum(A_ref[valid]))
                     pred_area_m2 = float(np.sum(A_pred[valid]))
                     valid_area_m2 = float(n_valid * pixel_area)
+                    pred_building_count = (
+                        pred_area_m2 / mean_ref_building_area_m2
+                        if np.isfinite(mean_ref_building_area_m2)
+                        and mean_ref_building_area_m2 > 0
+                        else np.nan
+                    )
+                    delta_building_count = (
+                        pred_building_count - ref_building_count
+                        if np.isfinite(pred_building_count)
+                        else np.nan
+                    )
+                    rel_delta_building_count = (
+                        delta_building_count / ref_building_count
+                        if ref_building_count > 0 and np.isfinite(delta_building_count)
+                        else np.nan
+                    )
 
                     rel_area_error = (
                         (pred_area_m2 - ref_area_m2) / ref_area_m2
@@ -243,6 +278,11 @@ def compute_raster_tile_metrics(
                             "f1": f1,
                             "ref_area_m2": ref_area_m2,
                             "pred_area_m2": pred_area_m2,
+                            "ref_building_count": ref_building_count,
+                            "mean_ref_building_area_m2": mean_ref_building_area_m2,
+                            "pred_building_count": pred_building_count,
+                            "delta_building_count": delta_building_count,
+                            "rel_delta_building_count": rel_delta_building_count,
                             "rel_area_error": rel_area_error,
                             "signed_area_bias": signed_area_bias,
                             "quantity_disagreement": qd,

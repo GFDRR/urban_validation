@@ -56,6 +56,9 @@ class RasterValidationRunner(BaseValidationRunner):
         tile_size = float(self.cfg["vector"]["preprocessing"]["tile_size_m"])
 
         overwrite, dpi, fmt = self._read_output_cfg()
+        show_count_plots = bool(
+            rast_cfg.get("reporting", {}).get("derive_counts", True)
+        )
 
         metrics_dir, figures_dir = self._setup_output_dirs(dataset_id)
 
@@ -192,20 +195,21 @@ class RasterValidationRunner(BaseValidationRunner):
             index=False,
         )
         log.info("[%s] Raster city summary saved.", dataset_id)
-        del city_summary
 
         try:
             figs = RasterFigureGenerator(self.cfg, dpi=dpi, fmt=fmt)
             figs.make(
                 dataset_id=dataset_id,
                 metrics_all=metrics_all,
+                city_summary=city_summary,
                 tiles=tiles,
                 figures_dir=figures_dir,
+                show_count_plots=show_count_plots,
             )
         finally:
             purge_matplotlib()
 
-        del metrics_all, tiles
+        del city_summary, metrics_all, tiles
         gc.collect()
         log_memory(f"{dataset_id} raster end")
         log.info("[%s] ✓ Raster complete.", dataset_id)
