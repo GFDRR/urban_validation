@@ -41,7 +41,7 @@ class RasterValidationRunner(BaseValidationRunner):
 
         # Raster preprocessing config
         rast_pre = rast_cfg.get("preprocessing", {})
-        min_building_m2 = float(rast_pre.get("min_building_m2", 20.0))
+        ref_min_building_m2 = float(rast_pre.get("min_building_m2", 20.0))
         oversample = int(rast_pre.get("oversample_factor", 4))
         all_touched = bool(rast_pre.get("all_touched", False))
         evaluation_grids = rast_pre.get("evaluation_grids", None)
@@ -135,6 +135,10 @@ class RasterValidationRunner(BaseValidationRunner):
                 dataset_id, ds_label, cand_path.name,
             )
 
+            ds_min_building_m2 = float(
+                cand_cfg.get("min_building_m2", ref_min_building_m2)
+            )
+
             try:
                 tile_path = self._run_candidate(
                     dataset_id=dataset_id,
@@ -146,7 +150,8 @@ class RasterValidationRunner(BaseValidationRunner):
                     aoi_union=aoi_union,
                     tiles=tiles,
                     metrics_dir=metrics_dir,
-                    min_building_m2=min_building_m2,
+                    min_building_m2=ds_min_building_m2,
+                    ref_min_building_m2=ref_min_building_m2,
                     oversample=oversample,
                     all_touched=all_touched,
                     evaluation_grids=evaluation_grids,
@@ -248,6 +253,7 @@ class RasterValidationRunner(BaseValidationRunner):
         tiles: gpd.GeoDataFrame,
         metrics_dir: Path,
         min_building_m2: float,
+        ref_min_building_m2: float,
         oversample: int,
         all_touched: bool,
         evaluation_grids: Optional[List[dict]] = None,
@@ -262,6 +268,7 @@ class RasterValidationRunner(BaseValidationRunner):
             aoi_union=aoi_union,
             tiles=tiles,
             min_building_m2=min_building_m2,
+            ref_min_building_m2=ref_min_building_m2,
             default_oversample=oversample,
             default_all_touched=all_touched,
             evaluation_grids=evaluation_grids,

@@ -22,7 +22,7 @@ logger = logging.getLogger("Validation_Metrics")
 
 def _choose_resampling(binarize_spec: dict) -> Resampling:
     """Nearest for categorical/binary rasters; bilinear for continuous ones."""
-    if binarize_spec.get("method", "") in {"wsf_tracker", "wsf_tracker_fraction", "value_in", "nonzero", "binary"}:
+    if binarize_spec.get("method", "") in {"wsf_tracker", "value_in", "nonzero", "binary"}:
         return Resampling.nearest
     return Resampling.bilinear
 
@@ -87,80 +87,93 @@ def _read_reprojected_tile(
     return dst
 
 
-def _read_wsf_as_built_fraction(
-    src,
-    band: int,
+def _reproject_area_to_grid(
+    area_arr: np.ndarray,
+    valid_mask: np.ndarray,
+    src_transform: Affine,
+    src_crs,
     dst_shape: tuple,
     dst_transform: Affine,
     dst_crs,
-    *,
-    binarize_spec: dict,
-    fill_value: float,
-    native_resolution_m: float,
+    native_pixel_area: float,
+    eval_pixel_area: float,
 ) -> np.ndarray:
+    """Aggregate native per-pixel areas (m²) to an evaluation grid.
+
+    Uses average resampling over valid native pixels, then multiplies by the
+    oversample ratio so the result is total predicted area per eval cell (m²),
+    matching the behaviour of the old post-reproject A_pred sum.
     """
-    Read WSF Tracker at native resolution, binarize codes to 0/1, then
-    block-average to dst_shape to produce a built fraction in [0, 1].
-
-    Nearest-neighbor resampling directly to a coarser evaluation grid aliases
-    catastrophically for a sparse binary product — picking one 10 m center
-    pixel per 100 m cell gives a ~20 % hit rate in typical cities, making
-    recall appear near 0.34 at 100 m.  Reading at native resolution first and
-    averaging the binary mask fixes that without changing the categorical
-    classification logic.
-    """
-    h, w = dst_shape
-    eval_res = abs(dst_transform.a)
-    oversample = max(1, int(round(eval_res / native_resolution_m)))
-
-    built_min = int(binarize_spec.get("built_value_min", 1))
-    as_of_code = int(binarize_spec.get("as_of_code", 19))
-    nonbuilt = int(binarize_spec.get("nonbuilt_value", 0))
-
-    if oversample == 1:
-        # Evaluation grid == native resolution: read codes, binarize directly.
-        arr = _read_reprojected_tile(
-            src=src,
-            band=band,
-            dst_shape=dst_shape,
-            dst_transform=dst_transform,
-            dst_crs=dst_crs,
-            binarize_spec=binarize_spec,
-            fill_value=fill_value,
-        )
-        valid = np.isfinite(arr)
-        return np.where(
-            valid,
-            ((arr >= built_min) & (arr <= as_of_code) & (arr != nonbuilt)).astype("float32"),
-            fill_value,
-        )
-
-    # Evaluation grid is coarser than native: read at native, binarize, average.
-    hi_shape = (h * oversample, w * oversample)
-    hi_transform = dst_transform * Affine.scale(1.0 / oversample, 1.0 / oversample)
-
-    hi_arr = _read_reprojected_tile(
-        src=src,
-        band=band,
-        dst_shape=hi_shape,
-        dst_transform=hi_transform,
+    src = np.where(valid_mask, area_arr.astype("float32"), np.nan)
+    dst = np.zeros(dst_shape, dtype="float32")
+    reproject(
+        source=src,
+        destination=dst,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        src_nodata=np.nan,
+        dst_transform=dst_transform,
         dst_crs=dst_crs,
-        binarize_spec=binarize_spec,
-        fill_value=fill_value,
+        dst_nodata=0.0,
+        resampling=Resampling.average,
     )
+    return dst * (eval_pixel_area / native_pixel_area)
 
-    # Convert codes to 0/1; mark out-of-extent pixels (fill_value) as NaN so
-    # they don't drag down the block average at coverage edges.
-    valid = np.isfinite(hi_arr)
-    binary = np.where(
-        valid,
-        ((hi_arr >= built_min) & (hi_arr <= as_of_code) & (hi_arr != nonbuilt)).astype("float32"),
-        np.nan,
+
+def _block_average_binary_to_grid(
+    binary_arr: np.ndarray,
+    valid_mask: np.ndarray,
+    src_transform: Affine,
+    src_crs,
+    dst_shape: tuple,
+    dst_transform: Affine,
+    dst_crs,
+) -> np.ndarray:
+    """Block-average a binary native mask to an evaluation grid.
+
+    Returns the fraction of built native pixels per eval cell in [0, 1].
+    Invalid native pixels (valid_mask=False) are excluded from the average
+    so coverage edges do not bias the result toward zero.
+    """
+    src = np.where(valid_mask, binary_arr.astype("float32"), np.nan)
+    dst = np.zeros(dst_shape, dtype="float32")
+    reproject(
+        source=src,
+        destination=dst,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        src_nodata=np.nan,
+        dst_transform=dst_transform,
+        dst_crs=dst_crs,
+        dst_nodata=0.0,
+        resampling=Resampling.average,
     )
+    return dst
 
-    fraction = np.nanmean(binary.reshape(h, oversample, w, oversample), axis=(1, 3))
-    # Cells where every sub-pixel was outside extent remain NaN → use fill_value.
-    return np.where(np.isnan(fraction), fill_value, fraction).astype("float32")
+
+def _reproject_binary_to_grid(
+    binary_arr: np.ndarray,
+    src_transform: Affine,
+    src_crs,
+    dst_shape: tuple,
+    dst_transform: Affine,
+    dst_crs,
+) -> np.ndarray:
+    """Reproject a binary (uint8) mask to a target grid using nearest-neighbor.
+
+    Pixels outside the source extent default to 0 (not built / invalid).
+    """
+    dst = np.zeros(dst_shape, dtype="uint8")
+    reproject(
+        source=binary_arr.astype("uint8"),
+        destination=dst,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        dst_transform=dst_transform,
+        dst_crs=dst_crs,
+        resampling=Resampling.nearest,
+    )
+    return dst
 
 
 def _read_window_padded(

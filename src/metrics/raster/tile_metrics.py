@@ -28,9 +28,11 @@ from src.metrics.raster.grids import (
     _normalize_evaluation_grids,
 )
 from src.metrics.raster.io import (
+    _block_average_binary_to_grid,
     _open_raster_in_crs,
     _read_reprojected_tile,
-    _read_wsf_as_built_fraction,
+    _reproject_area_to_grid,
+    _reproject_binary_to_grid,
 )
 from src.metrics.raster.rasterize import (
     _aoi_mask_for_window,
@@ -51,6 +53,7 @@ def compute_raster_tile_metrics(
     aoi_union,
     tiles: gpd.GeoDataFrame,
     min_building_m2: float,
+    ref_min_building_m2: float,
     default_oversample: int = 4,
     default_all_touched: bool = False,
     evaluation_grids: Optional[List[dict]] = None,
@@ -60,16 +63,30 @@ def compute_raster_tile_metrics(
     Tile-level raster validation for one candidate dataset, evaluated at one
     or more target grid resolutions.
 
-    For each tile and for each evaluation grid:
-      1. Read/reproject candidate raster onto the target grid.
-      2. Rasterize reference polygons onto the same target grid.
-      3. Compute binary and area-based metrics.
+    For each tile:
+      1. Read the candidate raster at native resolution.
+      2. Binarize at native resolution using the per-dataset threshold:
+           tau_frac_native = min_building_m2 / native_pixel_area.
+         Categorical methods (wsf_tracker, binary, nonzero, value_in) bypass
+         tau_frac and use A_pred > 0 directly.
+      3. Block-average the binary mask to each evaluation grid (fraction of built
+         native pixels per eval cell), then threshold at tau_frac = ref_min_building_m2
+         / eval_pixel_area — the same threshold applied to the reference side.
+      4. Rasterize reference polygons onto the evaluation grid (fractional coverage).
+         Reference binarization uses the global threshold:
+           tau_frac = ref_min_building_m2 / eval_pixel_area.
+         This keeps the reference definition of "built" consistent across all
+         dataset comparisons at the same evaluation grid.
+      5. Compute binary and area-based metrics.
 
-    The reference and prediction binarization threshold adapts to each
-    evaluation grid: tau_frac = min_building_m2 / pixel_area_m2. This
-    means "a pixel is built if it contains at least one minimum-detectable
-    building's worth of area" — at 10 m (100 m² pixel, min=20 m²) this
-    gives 0.20; at 100 m (10 000 m² pixel) it gives 0.002.
+    Parameters
+    ----------
+    min_building_m2 : float
+        Per-dataset minimum detectable building size (m²). Controls prediction
+        binarization at native resolution.
+    ref_min_building_m2 : float
+        Global minimum building size (m²) for reference binarization at the
+        evaluation grid. Fixed across all datasets so comparisons are consistent.
 
     Returns one row per (tile, grid).
     """
@@ -79,12 +96,15 @@ def compute_raster_tile_metrics(
     base_oversample = int(rast_over.get("oversample_factor", default_oversample))
     base_all_touched = bool(rast_over.get("all_touched", default_all_touched))
     band = int(bin_spec.get("band", 1))
+    method = bin_spec.get("method", "fraction")
+    nodata = bin_spec.get("nodata", None)
+    fill = float(nodata) if nodata is not None else np.nan
 
-    fallback_resolution = cand_cfg.get("native_resolution_m", 10)
+    native_res = float(cand_cfg.get("native_resolution_m", 10))
 
     grids = _normalize_evaluation_grids(
         evaluation_grids=evaluation_grids,
-        fallback_resolution=fallback_resolution,
+        fallback_resolution=native_res,
     )
 
     grids = _filter_evaluation_grids_by_native_resolution(
@@ -105,13 +125,11 @@ def compute_raster_tile_metrics(
 
     with rasterio.open(raster_path) as _src:
         ds = _open_raster_in_crs(_src, str(tiles.crs), bin_spec)
-        nodata = bin_spec.get("nodata", None)
 
         for tile_row in tiles.itertuples():
             tile_id = int(tile_row.tile_id)
             geom = tile_row.geometry
 
-            # Subset reference once per tile, reuse across all evaluation grids
             ref_tile = subset_by_tile(ref_all, ref_sindex, geom)
             ref_geoms = list(ref_tile.geometry.values) if not ref_tile.empty else []
             ref_building_count = int(len(ref_tile))
@@ -120,6 +138,56 @@ def compute_raster_tile_metrics(
                 if not ref_tile.empty and "area_m2" in ref_tile.columns
                 else np.nan
             )
+
+            # Step 1: Read at native resolution (once per tile, shared across grids).
+            native_transform, native_shape = _make_grid_aligned_transform(geom.bounds, native_res)
+            native_pixel_area = _pixel_area_from_transform(native_transform)
+            tau_frac_native = min(1.0, min_building_m2 / native_pixel_area)
+
+            try:
+                native_arr = _read_reprojected_tile(
+                    src=ds,
+                    band=band,
+                    dst_shape=native_shape,
+                    dst_transform=native_transform,
+                    dst_crs=tiles.crs,
+                    binarize_spec=bin_spec,
+                    fill_value=fill,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "[raster tile metrics] tile=%s native read failed: %s",
+                    tile_id,
+                    exc,
+                )
+                for grid in grids:
+                    _t, _s = _make_grid_aligned_transform(geom.bounds, float(grid["resolution"]))
+                    rows.append(
+                        _empty_raster_tile_row(
+                            tile_id,
+                            _pixel_area_from_transform(_t),
+                            grid_name=str(grid["name"]),
+                            resolution=float(grid["resolution"]),
+                        )
+                    )
+                del ref_tile
+                continue
+
+            # Native valid mask: tracks which pixels are within source extent / not nodata.
+            if nodata is not None:
+                if method in {"fraction", "percent", "area_m2"}:
+                    native_valid = np.isfinite(native_arr)
+                else:
+                    native_valid = native_arr != float(nodata)
+            else:
+                native_valid = np.isfinite(native_arr)
+
+            # Step 2: Binarize at native resolution.
+            A_pred_native = predicted_area_from_raster(native_arr, native_transform, bin_spec)
+            pred_bin_native = pred_bin_from_pred_area(
+                A_pred_native, native_transform, bin_spec, tau_frac_native
+            )
+            pred_bin_native = pred_bin_native & native_valid
 
             for grid in grids:
                 grid_name = str(grid["name"])
@@ -137,56 +205,39 @@ def compute_raster_tile_metrics(
 
                 transform, out_shape = _make_grid_aligned_transform(geom.bounds, resolution)
                 pixel_area = _pixel_area_from_transform(transform)
-                tau_frac = min(1.0, min_building_m2 / pixel_area)
-
-                fill = float(nodata) if nodata is not None else np.nan
+                tau_frac = min(1.0, ref_min_building_m2 / pixel_area)
 
                 try:
-                    if bin_spec.get("method") == "wsf_tracker_fraction":
-                        arr = _read_wsf_as_built_fraction(
-                            src=ds,
-                            band=band,
-                            dst_shape=out_shape,
-                            dst_transform=transform,
-                            dst_crs=tiles.crs,
-                            binarize_spec=bin_spec,
-                            fill_value=fill,
-                            native_resolution_m=float(cand_cfg.get("native_resolution_m", 10.0)),
-                        )
-                    else:
-                        arr = _read_reprojected_tile(
-                            src=ds,
-                            band=band,
-                            dst_shape=out_shape,
-                            dst_transform=transform,
-                            dst_crs=tiles.crs,
-                            binarize_spec=bin_spec,
-                            fill_value=fill,
-                        )
+                    # Step 3: Block-average binary mask to eval grid, then threshold.
+                    # tau_frac is ref_min_building_m2 / eval_pixel_area — the same
+                    # threshold used for ref_bin, making both sides symmetric.
+                    pred_frac_at_eval = _block_average_binary_to_grid(
+                        pred_bin_native,
+                        native_valid,
+                        src_transform=native_transform,
+                        src_crs=tiles.crs,
+                        dst_shape=out_shape,
+                        dst_transform=transform,
+                        dst_crs=tiles.crs,
+                    )
+                    pred_bin = pred_frac_at_eval >= tau_frac
+
+                    native_valid_at_eval = _reproject_binary_to_grid(
+                        native_valid,
+                        src_transform=native_transform,
+                        src_crs=tiles.crs,
+                        dst_shape=out_shape,
+                        dst_transform=transform,
+                        dst_crs=tiles.crs,
+                    ).astype(bool)
 
                     aoi_mask = _aoi_mask_for_window(
-                        aoi_union,
-                        arr.shape,
-                        transform,
-                        all_touched=all_touched,
+                        aoi_union, out_shape, transform, all_touched=all_touched,
                     )
                     tile_mask = _aoi_mask_for_window(
-                        geom,
-                        arr.shape,
-                        transform,
-                        all_touched=all_touched,
+                        geom, out_shape, transform, all_touched=all_touched,
                     )
-
-                    valid = aoi_mask & tile_mask
-                    method = bin_spec.get("method", "")
-
-                    if nodata is not None:
-                        if method in {"fraction", "percent", "area_m2", "wsf_tracker_fraction"}:
-                            valid &= np.isfinite(arr)
-                        else:
-                            valid &= (arr != nodata)
-                    else:
-                        valid &= np.isfinite(arr)
+                    valid = aoi_mask & tile_mask & native_valid_at_eval
 
                     n_valid = int(valid.sum())
 
@@ -201,19 +252,18 @@ def compute_raster_tile_metrics(
                         )
                         continue
 
+                    # Step 4: Rasterize reference at evaluation grid (unchanged).
                     ref_frac = _rasterize_ref_fraction(
                         ref_geoms,
-                        out_shape=arr.shape,
+                        out_shape=out_shape,
                         transform=transform,
                         oversample=oversample,
                         all_touched=all_touched,
                     )
                     ref_bin = ref_frac >= tau_frac
-
                     A_ref = ref_frac * pixel_area
-                    A_pred = predicted_area_from_raster(arr, transform, bin_spec)
-                    pred_bin = pred_bin_from_pred_area(A_pred, transform, bin_spec, tau_frac)
 
+                    # Step 5: Metrics.
                     tp = int(np.sum(valid & ref_bin & pred_bin))
                     fp = int(np.sum(valid & (~ref_bin) & pred_bin))
                     fn = int(np.sum(valid & ref_bin & (~pred_bin)))
@@ -230,7 +280,18 @@ def compute_raster_tile_metrics(
                     )
 
                     ref_area_m2 = float(np.sum(A_ref[valid]))
-                    pred_area_m2 = float(np.sum(A_pred[valid]))
+                    A_pred_eval = _reproject_area_to_grid(
+                        A_pred_native,
+                        native_valid,
+                        src_transform=native_transform,
+                        src_crs=tiles.crs,
+                        dst_shape=out_shape,
+                        dst_transform=transform,
+                        dst_crs=tiles.crs,
+                        native_pixel_area=native_pixel_area,
+                        eval_pixel_area=pixel_area,
+                    )
+                    pred_area_m2 = float(np.sum(A_pred_eval[valid]))
                     valid_area_m2 = float(n_valid * pixel_area)
                     pred_building_count = (
                         pred_area_m2 / mean_ref_building_area_m2
@@ -266,7 +327,7 @@ def compute_raster_tile_metrics(
                             "grid": grid_name,
                             "resolution_m": resolution,
                             "pixel_area_m2": float(pixel_area),
-                            "n_pixels": int(arr.size),
+                            "n_pixels": int(out_shape[0] * out_shape[1]),
                             "n_valid": n_valid,
                             "valid_area_m2": valid_area_m2,
                             "tp": tp,
@@ -293,8 +354,8 @@ def compute_raster_tile_metrics(
                         }
                     )
 
-                    del arr, ref_frac, ref_bin, A_ref, A_pred, pred_bin
-                    del valid, aoi_mask, tile_mask
+                    del pred_bin, pred_frac_at_eval, A_pred_eval, ref_frac, ref_bin, A_ref
+                    del valid, native_valid_at_eval, aoi_mask, tile_mask
 
                 except Exception as exc:
                     logger.exception(
@@ -313,7 +374,7 @@ def compute_raster_tile_metrics(
                         )
                     )
 
-            del ref_tile
+            del ref_tile, native_arr, A_pred_native, pred_bin_native, native_valid
 
         if ds is not _src:
             ds.close()
