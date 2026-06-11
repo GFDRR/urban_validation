@@ -1,6 +1,14 @@
 <div align="center">
 
 # Assessment of Satellite-derived Building Datasets 
+## Contributors
+[Rufai Omowunmi Balogun](https://github.com/Ruphai),
+[Caroline Margaux Gevaert](https://github.com/CGevaert), 
+[Derrick Mirindi](https://github.com/Derrickmirindi), 
+[Aaron Opdyke](),
+[Capucine Anne Veronique Riom](https://github.com/CapsR), 
+[Pierre Chrzanowski](https://github.com/pzwsk), and 
+[Edward Charles Anderson]()
 
 </div>
 
@@ -168,15 +176,6 @@ This code repository and corresponding datasets are distributed under the MIT Li
   howpublished={\url{https://github.com/GFDRR/urban_validation}}
 }
 ```
-
-## Contributors
-[Rufai Omowunmi Balogun](https://github.com/Ruphai),
-[Caroline Margaux Gevaert](https://github.com/CGevaert), 
-[Derrick Mirindi](https://github.com/Derrickmirindi), 
-[Aaron Opdyke](),
-[Capucine Anne Veronique Riom](https://github.com/CapsR), 
-[Pierre Chrzanowski](https://github.com/pzwsk), and 
-[Edward Charles Anderson]()
 
 ## Acknowledgment
 GFDRR, World Bank,
