@@ -207,29 +207,39 @@ def compute_raster_tile_metrics(
                 pixel_area = _pixel_area_from_transform(transform)
                 tau_frac = min(1.0, ref_min_building_m2 / pixel_area)
 
-                try:
-                    # Step 3: Block-average binary mask to eval grid, then threshold.
-                    # tau_frac is ref_min_building_m2 / eval_pixel_area — the same
-                    # threshold used for ref_bin, making both sides symmetric.
-                    pred_frac_at_eval = _block_average_binary_to_grid(
-                        pred_bin_native,
-                        native_valid,
-                        src_transform=native_transform,
-                        src_crs=tiles.crs,
-                        dst_shape=out_shape,
-                        dst_transform=transform,
-                        dst_crs=tiles.crs,
-                    )
-                    pred_bin = pred_frac_at_eval >= tau_frac
+                # Skip reprojection when native resolution already matches eval resolution
+                # (e.g. TEMPO/GHSL at 100 m native on a 100 m eval grid).
+                same_res = abs(native_res - resolution) / max(native_res, resolution) < 1e-3
 
-                    native_valid_at_eval = _reproject_binary_to_grid(
-                        native_valid,
-                        src_transform=native_transform,
-                        src_crs=tiles.crs,
-                        dst_shape=out_shape,
-                        dst_transform=transform,
-                        dst_crs=tiles.crs,
-                    ).astype(bool)
+                try:
+                    # Step 3: Project binary native mask to eval grid, then threshold.
+                    # tau_frac (ref_min_building_m2 / eval_pixel_area) is applied
+                    # symmetrically to both pred and ref at the eval-grid step.
+                    if same_res:
+                        # Native and eval grids are identical — no reprojection needed.
+                        # pred_bin_native is already binary (0/1); cast to float so the
+                        # >= tau_frac comparison is consistent with the non-same_res path.
+                        pred_frac_at_eval = pred_bin_native.astype(np.float32)
+                        native_valid_at_eval = native_valid
+                    else:
+                        pred_frac_at_eval = _block_average_binary_to_grid(
+                            pred_bin_native,
+                            native_valid,
+                            src_transform=native_transform,
+                            src_crs=tiles.crs,
+                            dst_shape=out_shape,
+                            dst_transform=transform,
+                            dst_crs=tiles.crs,
+                        )
+                        native_valid_at_eval = _reproject_binary_to_grid(
+                            native_valid,
+                            src_transform=native_transform,
+                            src_crs=tiles.crs,
+                            dst_shape=out_shape,
+                            dst_transform=transform,
+                            dst_crs=tiles.crs,
+                        ).astype(bool)
+                    pred_bin = pred_frac_at_eval >= tau_frac
 
                     aoi_mask = _aoi_mask_for_window(
                         aoi_union, out_shape, transform, all_touched=all_touched,
