@@ -170,7 +170,7 @@ This code repository and corresponding datasets are distributed under the MIT Li
 ```
 
 ## Contributors
-Rufai Omowunmi Balogun,
+[Rufai Omowunmi Balogun](@Ruphai),
 Caroline Margaux Gevaert, 
 Derrick Mirindi, 
 Aaron Opdyke,
