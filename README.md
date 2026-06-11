@@ -28,7 +28,11 @@ The validation framework has two evaluation paths.
 
 Vector datasets are validated as object-based building footprints. The pipeline clips and repairs geometries where needed, removes very small polygons below the configured minimum area threshold, tiles each AOI into fixed evaluation units, and performs greedy IoU-based one-to-one matching between reference and candidate footprints. It then reports TP, FP, FN, precision, recall, F1, IoU summaries, boundary F-scores, area error, size-bin metrics, and city-level count and density summaries.
 
+![Vector validation method](figures/vector_method.png)
+
 Raster datasets are validated as gridded built-up layers. The pipeline reprojects each raster to the AOI CRS, aligns it to one or more evaluation grids, rasterizes the reference footprints into fractional built-up area, thresholds both reference and prediction to built-up masks, and computes area-based precision, recall, F1, relative area error, quantity disagreement, allocation disagreement, and building-count estimates derived from the reference mean building size.
+
+![Raster validation method](figures/raster_method.png)
 
 Both paths write tile-level outputs first and then aggregate to city-level summary tables and figures.
 
@@ -37,7 +41,8 @@ Both paths write tile-level outputs first and then aggregate to city-level summa
 
 | Module | Role |
 |--------|------|
-| `src/downloader.py` | `UrbanDownloader` — downloads vector and raster datasets for all cities in the AOI inventory |
+| `src/downloader.py` | `UrbanDownloader` — thin orchestrator that loads the AOI inventory and dispatches per-dataset download runners |
+| `src/download/*` | Source-specific download runners — vector: Overture, GBA, GloBFP; raster: Google OBT, TEMPO, GHSL, WSF Tracker — plus shared DuckDB connection setup |
 | `src/validator.py` | `UrbanValidator` — thin orchestrator that dispatches vector and raster validation per city |
 | `src/validate/vector_runner.py` | Tile-level vector validation, match consolidation, city summaries, density summaries, and vector figures |
 | `src/validate/raster_runner.py` | Tile-level raster validation, city summaries, and raster figures |
@@ -45,6 +50,7 @@ Both paths write tile-level outputs first and then aggregate to city-level summa
 | `src/metrics/raster/*` | Raster alignment, reference rasterization, binarization, disagreement metrics, and raster tile assembly |
 | `src/plots/output.py` | City-level summaries and the standard vector/raster figures |
 | `src/plots/figures.py` | Figure dispatchers for vector and raster validation |
+| `src/plots/visualize.py` | Interactive dataset-coverage map (`build_inventory_map`) for the AOI/reference inventory |
 | `src/utils/*` | AOI loading, tiling, building loading, geometry repair, memory helpers, and weighted aggregation |
 | `src/config.py` | Typed dataclass config for the download pipeline |
 
@@ -94,7 +100,7 @@ v.validate_vector()
 
 Outputs per city are written to `outputs/metrics/<city>/` and `outputs/figures/<city>/`. Vector outputs include tile metrics, match records, city-level summary tables, size-bin metrics, and density/count summaries. Candidate datasets and preprocessing thresholds are controlled via `configs/validation_configs.yaml`.
 
-See `notebooks/vector_validator.ipynb` for the Colab-ready notebook.
+See `notebooks/01_vector_validator.ipynb` for the Colab-ready notebook.
 
 #### Raster datasets validation
 ```python
@@ -106,7 +112,9 @@ v.validate_raster()
 
 Each raster dataset entry in `configs/validation_configs.yaml` specifies a `name`, `year`, binarization method, and optionally a native resolution and rasterization settings. The pipeline resolves the exact file for each city from the `year` field — for example, setting `year: 2020` for `ghsl_built_s` loads `<city_slug>_ghsl_built_s_2020.tif`. Multiple years of the same product can be validated by adding separate entries.
 
-See `notebooks/raster_validator.ipynb` for the Colab-ready notebook.
+Each dataset's `min_building_m2` sets the minimum-detectable-building threshold used to binarize *predictions* at native resolution (`tau_frac_native = min_building_m2 / native_pixel_area`); categorical binarization methods (`wsf_tracker`, `binary`, `nonzero`, `value_in`) bypass this and use predicted area > 0 directly. The global `raster.preprocessing.min_building_m2` sets the threshold used to binarize the *reference* layer at each evaluation grid resolution, keeping the reference "built" definition consistent across datasets. `raster.preprocessing.native_resolution_guard` controls whether evaluation grids finer than a dataset's `native_resolution_m` (scaled by `tolerance_factor`) are skipped (`skip_finer`), rejected (`error`), or allowed with a warning (`warn_only`).
+
+See `notebooks/02_raster_validator.ipynb` for the Colab-ready notebook.
 
 ### Result visualization 
 The validation pipeline writes city-level summaries and figures for both vector and raster datasets. The standard outputs now include building-count analytics in addition to IoU, area error, and F1 summaries:
@@ -115,8 +123,6 @@ The validation pipeline writes city-level summaries and figures for both vector 
 - `outputs/metrics/<city>/vector_city_density_summary.{parquet,csv}` includes per-source counts, densities, and count-vs-reference deltas.
 - `outputs/metrics/<city>/raster_city_summary_all_datasets.{parquet,csv}` includes predicted/reference building counts, count deltas, and relative count differences.
 - `outputs/figures/<city>/` contains the standard tile/F1/IoU plots plus building-count comparison figures.
-
-See `examples/quick_run.md` for a minimal end-to-end run recipe.
 
 ### File Organization
 The datasets are organized as follows:
