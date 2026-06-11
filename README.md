@@ -1,7 +1,6 @@
 <div align="center">
 
 # Assessment of Satellite-derived Building Datasets 
-## Contributors
 [Rufai Omowunmi Balogun](https://github.com/Ruphai),
 [Caroline Margaux Gevaert](https://github.com/CGevaert), 
 [Derrick Mirindi](https://github.com/Derrickmirindi), 
@@ -28,7 +27,7 @@ The repository is set up to run over the AOIs listed in `data/02_interim/aoi_tra
 
 ![AOIs with high quality references](figures/sample_AOIs.png)
 
-Dataset would be provided publicly here: 
+Reference dataset used for benchmarking is publicly accessible here: 
 
 
 ## Validation approach
@@ -167,9 +166,9 @@ This code repository and corresponding datasets are distributed under the MIT Li
 ## Citation
 
 ```
-@misc{gfdrr2026,
+@misc{urban_validation_gfdrr2026,
   title={An assessment of satellite derived global urban datasets for operational and analytical use cases},
-  author={},
+  author={Rufai Omowunmi Balogun, Caroline Margaux Gevaert, Derrick Mirindi, Aaron Opdyke, Capucine Anne Veronique Riom, Pierre Chrzanowski, Edward Charles Anderson},
   year={2026},
   organization={GFDRR, The World Bank Group},
   type={Dataset},
@@ -178,14 +177,8 @@ This code repository and corresponding datasets are distributed under the MIT Li
 ```
 
 ## Acknowledgment
-GFDRR, World Bank,
-
-Gates Foundation,
-
-HOTOSM Datasets, 
-
-World Bank Datasets, 
-
-Partner Countries for on ground validation datasets,
- 
-Feedback from other Team in the World Bank Digital Earth Partnership
+1. The Global Facility for Disaster Reduction and Recovery (GFDRR), The World Bank Group,
+2. The Gates Foundation,
+3. The Humanitarian Openstreet Map (HOTOSM), 
+4. University of Edinburgh 
+5. The SPARC Project for access to datasets from partner countries and cities for on ground validation, and the broader World Bank Group Digital Earth Partnership Team for feedbacks and inputs 
