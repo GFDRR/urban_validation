@@ -170,12 +170,13 @@ This code repository and corresponding datasets are distributed under the MIT Li
 ```
 
 ## Contributors
-[Rufai Omowunmi Balogun](@Ruphai),
-Caroline Margaux Gevaert, 
-Derrick Mirindi, 
-Aaron Opdyke,
-Capucine Anne Veronique Riom, 
-Pierre Chrzanowski1, and Edward Charles Anderson1
+[Rufai Omowunmi Balogun](https://github.com/Ruphai),
+[Caroline Margaux Gevaert](https://github.com/CGevaert), 
+[Derrick Mirindi](https://github.com/Derrickmirindi), 
+[Aaron Opdyke](),
+[Capucine Anne Veronique Riom](https://github.com/CapsR), 
+[Pierre Chrzanowski](https://github.com/pzwsk), and 
+[Edward Charles Anderson]()
 
 ## Acknowledgment
 GFDRR, World Bank,
