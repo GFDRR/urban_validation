@@ -182,4 +182,4 @@ World Bank Datasets,
 
 Partner Countries for on ground validation datasets,
  
-Feedback from other Team in the World Bank Digital Earth Partnership 
+Feedback from other Team in the World Bank Digital Earth Partnership
