@@ -181,4 +181,5 @@ This code repository and corresponding datasets are distributed under the MIT Li
 2. The Gates Foundation,
 3. The Humanitarian Openstreet Map (HOTOSM), 
 4. University of Edinburgh 
-5. The SPARC Project for access to datasets from partner countries and cities for on ground validation, and the broader World Bank Group Digital Earth Partnership Team for feedbacks and inputs 
+5. The SPARC Project for access to datasets from partner countries and cities for on ground validation, and the broader World Bank Group Digital Earth Partnership Team for feedbacks and inputs
+6. [SpaceNet7 Multi-Temporal Urban Development Challenge](https://www.eotdl.com/datasets/SpaceNet7)
