@@ -25,7 +25,7 @@ The repository is set up to run over the AOIs listed in `data/02_interim/aoi_tra
 
 </div>
 
-![AOIs with high quality references](figures/sample_AOIs.png)
+![AOIs with high quality references](figures/reference_data_area.png)
 
 Reference dataset used for benchmarking is publicly accessible here: 
 
