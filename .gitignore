@@ -2,3 +2,5 @@ data/TEMPO/
 data/WSF_3D/
 notebooks/archive/
 __pycache__/
+archive/*
+SN7_data*/*
