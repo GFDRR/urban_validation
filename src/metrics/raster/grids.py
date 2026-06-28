@@ -198,6 +198,7 @@ def _empty_raster_tile_row(
         "rmse_area_m2": np.nan,
         "rel_area_error": np.nan,
         "signed_area_bias": np.nan,
+        "signed_area_bias_pct": np.nan,
         "quantity_disagreement": np.nan,
         "allocation_disagreement": np.nan,
     }

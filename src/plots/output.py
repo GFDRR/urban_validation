@@ -132,6 +132,10 @@ def summarize_city(
             "rel_area_error_mean_tp":   _r(rel_area_mean),
             "rel_area_error_median_tp": _r(rel_area_median),
             "signed_area_bias_tp":      _r(signed_area_bias),
+            # Percentage form of signed_area_bias_tp.
+            # Denominator is sum of matched (TP) reference area only — FN buildings
+            # are excluded. Divide by total ref area instead for a whole-city view.
+            "signed_area_bias_pct_tp":  _r(signed_area_bias * 100.0) if not np.isnan(signed_area_bias) else float("nan"),
         })
 
     return pd.DataFrame(rows)
@@ -488,6 +492,14 @@ def summarize_raster_city(
             if np.isfinite(ref_area_total_m2) and ref_area_total_m2 > 0
             else np.nan
         )
+        # Percentage form: (total_pred − total_ref) / total_ref × 100.
+        # Mathematically equivalent to a ref-area-weighted mean of tile-level
+        # signed_area_bias values (larger tiles dominate by ref_area weight).
+        signed_area_bias_pct = (
+            signed_area_bias * 100.0
+            if np.isfinite(signed_area_bias)
+            else np.nan
+        )
 
         def _r(v):
             return round(float(v), 4) if np.isfinite(v) else float("nan")
@@ -520,6 +532,7 @@ def summarize_raster_city(
             "rel_area_error_mean": _r(err_s.mean()) if len(err_s) else float("nan"),
             "rel_area_error_median": _r(err_s.median()) if len(err_s) else float("nan"),
             "signed_area_bias": _r(signed_area_bias),
+            "signed_area_bias_pct": _r(signed_area_bias_pct),
             "quantity_disagreement_mean": _r(qd_s.mean()) if len(qd_s) else float("nan"),
             "allocation_disagreement_mean": _r(ad_s.mean()) if len(ad_s) else float("nan"),
             "precision_weighted_mean": _r(weighted_row["precision"]) if weighted_row is not None and pd.notna(weighted_row["precision"]) else float("nan"),
@@ -527,6 +540,7 @@ def summarize_raster_city(
             "f1_weighted_mean": _r(weighted_row["f1"]) if weighted_row is not None and pd.notna(weighted_row["f1"]) else float("nan"),
             "rel_area_error_weighted_mean": _r(weighted_row["rel_area_error"]) if weighted_row is not None and pd.notna(weighted_row["rel_area_error"]) else float("nan"),
             "signed_area_bias_weighted_mean": _r(weighted_row["signed_area_bias"]) if weighted_row is not None and pd.notna(weighted_row["signed_area_bias"]) else float("nan"),
+            "signed_area_bias_pct_weighted_mean": _r(weighted_row["signed_area_bias"] * 100.0) if weighted_row is not None and pd.notna(weighted_row["signed_area_bias"]) else float("nan"),
             "quantity_disagreement_weighted_mean": _r(weighted_row["quantity_disagreement"]) if weighted_row is not None and pd.notna(weighted_row["quantity_disagreement"]) else float("nan"),
             "allocation_disagreement_weighted_mean": _r(weighted_row["allocation_disagreement"]) if weighted_row is not None and pd.notna(weighted_row["allocation_disagreement"]) else float("nan"),
         }
