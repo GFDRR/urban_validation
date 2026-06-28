@@ -75,6 +75,28 @@ def summarize_city(
             matches_df[matches_df["dataset"] == ds]
             if not matches_df.empty else pd.DataFrame()
         )
+        # Total area across ALL buildings (TP+FN ref, TP+FP cand) summed over tiles.
+        ref_area_total_m2 = (
+            float(mds["ref_area_total_m2"].sum())
+            if "ref_area_total_m2" in mds.columns
+            else float("nan")
+        )
+        cand_area_total_m2 = (
+            float(mds["cand_area_total_m2"].sum())
+            if "cand_area_total_m2" in mds.columns
+            else float("nan")
+        )
+        total_area_bias = (
+            (cand_area_total_m2 - ref_area_total_m2) / ref_area_total_m2
+            if np.isfinite(ref_area_total_m2) and ref_area_total_m2 > 0
+            else float("nan")
+        )
+        total_area_bias_pct = (
+            total_area_bias * 100.0
+            if np.isfinite(total_area_bias)
+            else float("nan")
+        )
+
         if not dsmatches.empty:
             ious     = dsmatches["iou"].astype(float)
             bf       = (dsmatches["boundary_f_pair"].astype(float)
@@ -134,8 +156,14 @@ def summarize_city(
             "signed_area_bias_tp":      _r(signed_area_bias),
             # Percentage form of signed_area_bias_tp.
             # Denominator is sum of matched (TP) reference area only — FN buildings
-            # are excluded. Divide by total ref area instead for a whole-city view.
+            # are excluded. Use total_area_bias for a whole-city view.
             "signed_area_bias_pct_tp":  _r(signed_area_bias * 100.0) if not np.isnan(signed_area_bias) else float("nan"),
+            # Total area bias: (Σ cand_all − Σ ref_all) / Σ ref_all
+            # Denominator includes FN buildings; numerator includes FP candidates.
+            # Equivalent to the raster signed_area_bias — measures whether the
+            # dataset over- or under-represents total built-up area city-wide.
+            "total_area_bias":          _r(total_area_bias),
+            "total_area_bias_pct":      _r(total_area_bias_pct),
         })
 
     return pd.DataFrame(rows)

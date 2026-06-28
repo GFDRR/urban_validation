@@ -91,6 +91,15 @@ def compute_tile_metrics(
         else np.nan
     )
 
+    # Total areas across ALL buildings in this tile (TP + FN for ref, TP + FP for cand).
+    # Used by summarize_city to compute total_area_bias across the full city.
+    ref_area_total_m2 = (
+        float(ref_tile["area_m2"].sum()) if "area_m2" in ref_tile.columns else np.nan
+    )
+    cand_area_total_m2 = (
+        float(cand_tile["area_m2"].sum()) if "area_m2" in cand_tile.columns else np.nan
+    )
+
     metrics = {
         "city": city,
         "dataset": dataset_name,
@@ -111,6 +120,8 @@ def compute_tile_metrics(
         "boundary_f_meanpair": boundary_f_meanpair,
         "mean_rel_area_error": mean_rel_area_error,
         "signed_area_bias": signed_area_bias,
+        "ref_area_total_m2": ref_area_total_m2,
+        "cand_area_total_m2": cand_area_total_m2,
         "tau_overlap": tau_overlap,
         "tau_buffer_m": tau_buffer_m,
         "tau_boundary_m": tau_boundary_m,
