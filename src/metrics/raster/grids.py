@@ -194,6 +194,8 @@ def _empty_raster_tile_row(
         "f1": np.nan,
         "ref_area_m2": np.nan,
         "pred_area_m2": np.nan,
+        "mae_area_m2": np.nan,
+        "rmse_area_m2": np.nan,
         "rel_area_error": np.nan,
         "signed_area_bias": np.nan,
         "quantity_disagreement": np.nan,

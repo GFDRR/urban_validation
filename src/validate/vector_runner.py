@@ -163,12 +163,12 @@ class VectorValidationRunner(BaseValidationRunner):
             log.warning("[%s] No tile metrics produced — skipping output.", dataset_id)
             return False
 
-        # Combine and save city-level outputs
-        sentinel = metrics_dir / self.sentinel_name
+        # Combine and save city-level outputs.
+        # Sentinel is written LAST so that _is_already_complete can safely
+        # short-circuit: if the sentinel exists, every file written before it did too.
         metrics_all = pd.concat(
             [pd.read_parquet(p) for p in per_ds_tile_paths], ignore_index=True
         )
-        metrics_all.to_parquet(sentinel, index=False)
 
         matches_all = pd.concat(
             [pd.read_parquet(p) for p in per_ds_match_paths if p.exists()],
@@ -234,6 +234,9 @@ class VectorValidationRunner(BaseValidationRunner):
             )
         finally:
             purge_matplotlib()
+
+        # Write sentinel last — guarantees all other outputs exist if this file does.
+        metrics_all.to_parquet(metrics_dir / self.sentinel_name, index=False)
 
         del city_summary, metrics_all, matches_all, tiles
         gc.collect()

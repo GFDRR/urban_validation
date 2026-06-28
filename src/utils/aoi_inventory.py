@@ -82,13 +82,13 @@ def _load_aois_from_csv(config) -> List[Dict]:
     if aoi_cfg.filter_suitable and "Suitable" in df.columns:
         before = len(df)
         df = df[df["Suitable"].str.strip().str.lower() == "yes"]
-        print(f"Filtered inventory: {before} -> {len(df)} suitable rows")
+        log.info("Filtered inventory: %d -> %d suitable rows", before, len(df))
 
     # Optional high-quality filter
     if aoi_cfg.high_quality_only and "is_high_quality" in df.columns:
         before = len(df)
         df = df[df["is_high_quality"].str.strip().str.upper() == "TRUE"]
-        print(f"Filtered inventory: {before} -> {len(df)} high-quality rows")
+        log.info("Filtered inventory: %d -> %d high-quality rows", before, len(df))
 
     df = df.dropna(subset=[id_col, "aoi_file_name"])
     df = df[df["aoi_file_name"].str.strip() != ""]
@@ -108,7 +108,7 @@ def _load_aois_from_csv(config) -> List[Dict]:
 
         existing = [(fname, p) for fname, p in aoi_entries if p.exists()]
         if not existing:
-            print(f"Dataset {dataset_id}: no AOI files found on disk, skipping.")
+            log.warning("Dataset %s: no AOI files found on disk, skipping.", dataset_id)
             continue
 
         # Load each sub-AOI individually
@@ -126,10 +126,10 @@ def _load_aois_from_csv(config) -> List[Dict]:
                     "geometry":   sub_geom,
                 })
             except Exception as exc:
-                print(f"Dataset {dataset_id}: failed to load AOI {p}: {exc}")
+                log.warning("Dataset %s: failed to load AOI %s: %s", dataset_id, p, exc)
 
         if not parts_gdf:
-            print(f"Dataset {dataset_id}: empty AOI after loading, skipping.")
+            log.warning("Dataset %s: empty AOI after loading, skipping.", dataset_id)
             continue
 
         try:
@@ -140,7 +140,7 @@ def _load_aois_from_csv(config) -> List[Dict]:
             aoi = combined.dissolve().reset_index(drop=True) if len(combined) > 1 else combined
 
             if aoi.empty:
-                print(f"Dataset {dataset_id}: empty AOI after dissolve, skipping.")
+                log.warning("Dataset %s: empty AOI after dissolve, skipping.", dataset_id)
                 continue
 
             slug = dataset_id.replace("-", "_").replace(" ", "_")
@@ -298,11 +298,10 @@ def tag_buildings_with_sub_aoi(
     # Re-wrap as GeoDataFrame to preserve geometry metadata
     joined = gpd.GeoDataFrame(joined, geometry="geometry", crs=gdf.crs)
 
-    # Optional logging
     dropped = len(gdf) - len(joined)
-    print(
-        f"Tagged buildings: {len(gdf)} total, {len(joined)} matched sub-AOIs, "
-        f"{dropped} dropped (in gaps)"
+    log.info(
+        "Tagged buildings: %d total, %d matched sub-AOIs, %d dropped (in gaps)",
+        len(gdf), len(joined), dropped,
     )
 
     return joined
