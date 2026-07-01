@@ -33,6 +33,8 @@ def compute_tile_metrics(
     tau_boundary_m,
     tile_id,
     dataset_name,
+    *,
+    tile_area_km2: float = np.nan,
 ):
     matches_df, ref_unmatched, cand_unmatched = match_buildings_iou(
         ref_tile, cand_tile, tau_overlap, tau_buffer_m=tau_buffer_m
@@ -99,11 +101,15 @@ def compute_tile_metrics(
     cand_area_total_m2 = (
         float(cand_tile["area_m2"].sum()) if "area_m2" in cand_tile.columns else np.nan
     )
+    mean_ref_building_area_m2 = (
+        ref_area_total_m2 / n_ref if n_ref > 0 and np.isfinite(ref_area_total_m2) else np.nan
+    )
 
     metrics = {
         "city": city,
         "dataset": dataset_name,
         "tile_id": tile_id,
+        "tile_area_km2": tile_area_km2,
         "n_ref": n_ref,
         "n_cand": n_cand,
         "tp": tp,
@@ -121,6 +127,7 @@ def compute_tile_metrics(
         "mean_rel_area_error": mean_rel_area_error,
         "signed_area_bias": signed_area_bias,
         "ref_area_total_m2": ref_area_total_m2,
+        "mean_ref_building_area_m2": mean_ref_building_area_m2,
         "cand_area_total_m2": cand_area_total_m2,
         "tau_overlap": tau_overlap,
         "tau_buffer_m": tau_buffer_m,
