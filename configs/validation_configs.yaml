@@ -1,6 +1,6 @@
 root_dir: /content/drive/MyDrive/Gates Foundation/Building Dataset Validation
 data_dir: data/01_raw
-aoi_tracker: data/02_interim/aoi_tracker.csv
+aoi_tracker: data/02_interim/aoi_tracker_sn7.csv
 
 # Used by figure generation in src/plots/figures.py.
 size_bins:
@@ -11,8 +11,14 @@ vector:
   preprocessing:
     min_area_m2: 20
     tile_size_m: 1000
-    tau_overlap: 0.5
-    tau_buffer_m: 2.0
+    tau_overlap: 0.5      # IoU threshold for a true-positive match.
+                          # SN7 reference (3-4 m/px Planet imagery) has ±3-5 m boundary
+                          # uncertainty; matched TPs have median IoU ≈ 0.61, p25 ≈ 0.55.
+                          # Many true matches fall just below 0.5 → consider 0.4 when
+                          # comparing against SN7-derived reference.
+    tau_buffer_m: 2.0     # Buffer applied to both polygons before IoU.
+                          # 2 m helps with <2 m offsets; raise to 4-5 m for SN7 to
+                          # account for Planet-imagery registration error.
     tau_boundary: 2.0
     fix_invalid_geoms: true
 

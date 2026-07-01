@@ -203,17 +203,24 @@ def _select_files(labels_dir: Path, min_year: int = 2020) -> tuple[list[Path], s
 # Tile loading and city reference building
 # ---------------------------------------------------------------------------
 
-def _load_tile_labels(tile_dir: Path, min_year: int = 2020) -> gpd.GeoDataFrame | None:
-    """Read and concatenate the selected monthly GeoJSONs for one tile."""
+def _load_tile_labels(
+    tile_dir: Path, min_year: int = 2020
+) -> tuple[gpd.GeoDataFrame | None, int]:
+    """Read and concatenate the selected monthly GeoJSONs for one tile.
+
+    Returns (GeoDataFrame | None, n_files_loaded).  The caller uses
+    n_files_loaded to decide whether cross-month deduplication (union_all)
+    is needed: only necessary when > 1 file was stacked.
+    """
     labels_dir = tile_dir / "labels_match"
     if not labels_dir.is_dir():
         log.warning("  labels_match not found in %s — skipping tile", tile_dir.name)
-        return None
+        return None, 0
 
     files, note = _select_files(labels_dir, min_year)
     if not files:
         log.warning("  No GeoJSON files in %s — skipping tile", labels_dir)
-        return None
+        return None, 0
 
     parts: list[gpd.GeoDataFrame] = []
     for f in files:
@@ -228,11 +235,11 @@ def _load_tile_labels(tile_dir: Path, min_year: int = 2020) -> gpd.GeoDataFrame 
             log.warning("  Could not read %s: %s", f.name, exc)
 
     if not parts:
-        return None
+        return None, 0
 
     combined = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=SRC_CRS)
     log.info("  tile %-45s  %d raw polygons  [%s]", tile_dir.name, len(combined), note)
-    return combined
+    return combined, len(files)
 
 
 def _build_city_reference(
@@ -241,12 +248,24 @@ def _build_city_reference(
     min_area_m2: float,
     min_year: int = 2020,
 ) -> gpd.GeoDataFrame | None:
-    """Merge selected tile/month footprints for a city into a single clean layer."""
+    """Merge selected tile/month footprints for a city into a single clean layer.
+
+    When every tile contributes exactly one monthly snapshot (the common case
+    because SN7 only has one file per tile in 2020+, or falls back to the
+    single most-recent file), union_all() would only merge buildings that
+    accidentally *touch* within that snapshot — corrupting the reference by
+    joining adjacent structures into blobs.  We therefore apply union_all()
+    only when multiple monthly files were loaded for the same tile (i.e. when
+    genuine cross-month deduplication is needed).  With a single file per tile
+    we instead concatenate the raw polygons and fix invalid geometries in-place.
+    """
     all_parts: list[gpd.GeoDataFrame] = []
+    n_files_loaded: list[int] = []
     for td in tile_dirs:
-        gdf = _load_tile_labels(td, min_year)
+        gdf, n_files = _load_tile_labels(td, min_year)
         if gdf is not None:
             all_parts.append(gdf)
+            n_files_loaded.append(n_files)
 
     if not all_parts:
         log.error("  %s: no data loaded — skipping", city_id)
@@ -256,16 +275,20 @@ def _build_city_reference(
     raw["geometry"] = raw.geometry.buffer(0)
     raw = raw[raw.geometry.is_valid & ~raw.geometry.is_empty]
 
-    log.info("  %s: unioning %d raw polygons …", city_id, len(raw))
-    t0 = time.time()
-    merged_geom = raw.geometry.union_all()
-    log.info("  %s: union done in %.1f s", city_id, time.time() - t0)
-
-    merged = (
-        gpd.GeoDataFrame(geometry=[merged_geom], crs=SRC_CRS)
-        .explode(index_parts=False)
-        .reset_index(drop=True)
-    )
+    needs_union = any(n > 1 for n in n_files_loaded)
+    if needs_union:
+        log.info("  %s: unioning %d raw polygons (multi-month deduplication) …", city_id, len(raw))
+        t0 = time.time()
+        merged_geom = raw.geometry.union_all()
+        log.info("  %s: union done in %.1f s", city_id, time.time() - t0)
+        merged = (
+            gpd.GeoDataFrame(geometry=[merged_geom], crs=SRC_CRS)
+            .explode(index_parts=False)
+            .reset_index(drop=True)
+        )
+    else:
+        log.info("  %s: single-snapshot mode — skipping union_all to preserve adjacent buildings (%d polygons)", city_id, len(raw))
+        merged = raw.reset_index(drop=True)
 
     # Derive UTM zone from Web Mercator centroid to avoid geographic-CRS centroid warning.
     merc_cx = merged.geometry.centroid.x.mean()

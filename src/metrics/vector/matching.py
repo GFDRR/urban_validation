@@ -58,6 +58,15 @@ def match_buildings_iou(
     ref_g = ref_tile[["geometry"]].copy()
     cand_g = cand_tile[["geometry"]].copy()
 
+    # When buffering is active, pre-buffer ref/cand for the sjoin so that
+    # buildings with a small gap (common in SN7's ±3–5 m Planet imagery) are
+    # still discovered as candidate pairs before IoU is computed.
+    if tau_buffer_m and tau_buffer_m > 0:
+        ref_g_sjoin = ref_g.copy()
+        ref_g_sjoin["geometry"] = shapely.buffer(ref_g["geometry"].values, tau_buffer_m)
+    else:
+        ref_g_sjoin = ref_g
+
     # Chunked sjoin + vectorised IoU
     # Split candidate into chunks to cap peak memory of geometry arrays.
     n_cand = len(cand_g)
@@ -67,7 +76,13 @@ def match_buildings_iou(
     for start in range(0, n_cand, chunk_size):
         cand_chunk = cand_g.iloc[start : start + chunk_size]
 
-        joined = gpd.sjoin(ref_g, cand_chunk, how="inner", predicate="intersects")
+        if tau_buffer_m and tau_buffer_m > 0:
+            cand_chunk_sjoin = cand_chunk.copy()
+            cand_chunk_sjoin["geometry"] = shapely.buffer(cand_chunk["geometry"].values, tau_buffer_m)
+        else:
+            cand_chunk_sjoin = cand_chunk
+
+        joined = gpd.sjoin(ref_g_sjoin, cand_chunk_sjoin, how="inner", predicate="intersects")
         if joined.empty:
             continue
 
