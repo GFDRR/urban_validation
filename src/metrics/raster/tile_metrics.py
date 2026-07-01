@@ -303,6 +303,12 @@ def compute_raster_tile_metrics(
                     )
                     pred_area_m2 = float(np.sum(A_pred_eval[valid]))
                     valid_area_m2 = float(n_valid * pixel_area)
+
+                    # Per-pixel area errors (m²/pixel): mean absolute and RMS.
+                    # Unlike summed area bias, these do not allow over/under cancellation.
+                    _pixel_errors = A_pred_eval[valid] - A_ref[valid]
+                    mae_area_m2 = float(np.mean(np.abs(_pixel_errors)))
+                    rmse_area_m2 = float(np.sqrt(np.mean(_pixel_errors ** 2)))
                     pred_building_count = (
                         pred_area_m2 / mean_ref_building_area_m2
                         if np.isfinite(mean_ref_building_area_m2)
@@ -326,6 +332,13 @@ def compute_raster_tile_metrics(
                         else np.nan
                     )
                     signed_area_bias = rel_area_error
+                    # Percentage form: (pred - ref) / ref × 100.
+                    # Same information as signed_area_bias; easier to read in reports.
+                    signed_area_bias_pct = (
+                        signed_area_bias * 100.0
+                        if np.isfinite(signed_area_bias)
+                        else np.nan
+                    )
 
                     qd, ad = _compute_quantity_allocation_disagreement(
                         ref_bin, pred_bin, valid
@@ -349,6 +362,8 @@ def compute_raster_tile_metrics(
                             "f1": f1,
                             "ref_area_m2": ref_area_m2,
                             "pred_area_m2": pred_area_m2,
+                            "mae_area_m2": mae_area_m2,
+                            "rmse_area_m2": rmse_area_m2,
                             "ref_building_count": ref_building_count,
                             "mean_ref_building_area_m2": mean_ref_building_area_m2,
                             "pred_building_count": pred_building_count,
@@ -356,6 +371,7 @@ def compute_raster_tile_metrics(
                             "rel_delta_building_count": rel_delta_building_count,
                             "rel_area_error": rel_area_error,
                             "signed_area_bias": signed_area_bias,
+                            "signed_area_bias_pct": signed_area_bias_pct,
                             "quantity_disagreement": qd,
                             "allocation_disagreement": ad,
                             "native_resolution_m": float(cand_cfg["native_resolution_m"])

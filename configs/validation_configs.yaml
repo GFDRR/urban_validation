@@ -113,6 +113,18 @@ raster:
         method: wsf_tracker
         band: 1
         built_value_min: 1
+        # WSF Tracker year-code encoding: 0 = non-built; positive values = year of first
+        # settlement detection. Two encodings exist depending on the product version:
+        #   Sequential (1-indexed from 2015):  1=2015, 2=2016, …, 9=2023, 10=2024
+        #   Two-digit year:                   15=2015, 16=2016, …, 23=2023, 24=2024
+        # Verify the actual encoding before use:
+        #   import rasterio, numpy as np
+        #   with rasterio.open(wsf_path) as src: print(np.unique(src.read(1)))
+        # Set as_of_code to match the reference dataset collection year.
+        #   Sequential encoding:  as_of_code=9  → 2023;  as_of_code=10 → 2024
+        #   Two-digit encoding:   as_of_code=23 → 2023;  as_of_code=24 → 2024
+        # Current value 19: selects all years if sequential (max code ≤ 9); selects
+        # only up to 2019 if two-digit encoding (missing 2020–2024 vs reference).
         as_of_code: 19
         nonbuilt_value: 0
         nodata: null
