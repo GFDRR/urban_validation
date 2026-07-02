@@ -33,6 +33,7 @@ def compute_tile_metrics(
     tau_boundary_m,
     tile_id,
     dataset_name,
+    tile_geom=None,
 ):
     matches_df, ref_unmatched, cand_unmatched = match_buildings_iou(
         ref_tile, cand_tile, tau_overlap, tau_buffer_m=tau_buffer_m
@@ -100,10 +101,33 @@ def compute_tile_metrics(
         float(cand_tile["area_m2"].sum()) if "area_m2" in cand_tile.columns else np.nan
     )
 
+    # tile_geom and ref_tile are both in the city's projected CRS (metres),
+    # set upstream in VectorValidationRunner._build_tiles() / _load_reference_buildings().
+    if tile_geom is not None:
+        tile_area_km2 = tile_geom.area / 1e6
+
+        # Centroid-based assignment: only count ref buildings whose centroid falls inside
+        # the tile. This avoids double-counting edge buildings across adjacent tiles.
+        if len(ref_tile) > 0:
+            centroids_in = ref_tile[ref_tile.geometry.centroid.within(tile_geom)]
+            ref_building_count_centroid  = len(centroids_in)
+            mean_ref_building_area_m2    = float(centroids_in.geometry.area.mean()) if ref_building_count_centroid > 0 else float('nan')
+            ref_building_density_per_km2 = ref_building_count_centroid / tile_area_km2 if tile_area_km2 > 0 else float('nan')
+        else:
+            ref_building_count_centroid  = 0
+            mean_ref_building_area_m2    = float('nan')
+            ref_building_density_per_km2 = float('nan')
+    else:
+        tile_area_km2                = float('nan')
+        ref_building_count_centroid  = 0
+        mean_ref_building_area_m2    = float('nan')
+        ref_building_density_per_km2 = float('nan')
+
     metrics = {
         "city": city,
         "dataset": dataset_name,
         "tile_id": tile_id,
+        "tile_area_km2":               round(tile_area_km2, 6) if not np.isnan(tile_area_km2) else float('nan'),
         "n_ref": n_ref,
         "n_cand": n_cand,
         "tp": tp,
@@ -122,6 +146,9 @@ def compute_tile_metrics(
         "signed_area_bias": signed_area_bias,
         "ref_area_total_m2": ref_area_total_m2,
         "cand_area_total_m2": cand_area_total_m2,
+        "ref_building_count_centroid":  ref_building_count_centroid,
+        "mean_ref_building_area_m2":    mean_ref_building_area_m2,
+        "ref_building_density_per_km2": ref_building_density_per_km2,
         "tau_overlap": tau_overlap,
         "tau_buffer_m": tau_buffer_m,
         "tau_boundary_m": tau_boundary_m,

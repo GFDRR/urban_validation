@@ -309,6 +309,7 @@ class VectorValidationRunner(BaseValidationRunner):
                 ref_tile, dataset_id, cand_tile,
                 tau_overlap, tau_buffer, tau_boundary,
                 tile_id, ds_name,
+                tile_geom,
             )
             ds_tile_metrics.append(metrics)
 
