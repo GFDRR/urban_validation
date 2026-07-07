@@ -27,7 +27,14 @@ log = logging.getLogger("UrbanValidator.raster")
 
 
 class RasterValidationRunner(BaseValidationRunner):
-    """Tile-level pixel metrics against rasterised reference for each candidate."""
+    """Tile-level pixel metrics against rasterised reference for each candidate.
+
+    NOTE: The raster pipeline uses pixel-level agreement metrics (precision/recall/F1
+    over rasterised pixels, plus quantity/allocation disagreement). It does NOT use
+    polygon IoU matching and is therefore entirely unaffected by the city-adaptive
+    IoU threshold change introduced for the vector pipeline (item 21a).
+    Raster thresholds are controlled by the `raster.preprocessing` config section.
+    """
 
     sentinel_name = "raster_metrics_tiles_all_datasets.parquet"
 

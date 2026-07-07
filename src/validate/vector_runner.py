@@ -36,6 +36,12 @@ log = logging.getLogger("UrbanValidator.vector")
 # Flush accumulated match chunks to disk every N tiles to cap memory usage.
 _MATCH_FLUSH_INTERVAL = 100
 
+# City-adaptive IoU thresholds.
+# SpaceNet7 uses τ=0.25 as the benchmark standard (Van Etten & Hogan 2021);
+# all other cities use τ=0.50, the standard detection literature threshold.
+IOT_THRESHOLD_SPACENET7 = 0.25  # SpaceNet7 evaluation standard (Van Etten & Hogan 2021)
+IOT_THRESHOLD_DEFAULT   = 0.50  # Standard detection literature threshold (PASCAL-VOC)
+
 
 class VectorValidationRunner(BaseValidationRunner):
     """Tile-level IoU matching against reference for every enabled candidate."""
@@ -53,10 +59,22 @@ class VectorValidationRunner(BaseValidationRunner):
         vec_pre = self.cfg["vector"]["preprocessing"]
         min_area = float(vec_pre["min_area_m2"])
         tile_size = float(vec_pre["tile_size_m"])
-        tau_overlap = float(vec_pre.get("iou_threshold", vec_pre.get("tau_overlap", 0.5)))
         tau_buffer = float(vec_pre["tau_buffer_m"])
         tau_boundary = float(vec_pre["tau_boundary"])
         fix_geoms = bool(vec_pre.get("fix_invalid_geoms", True))
+
+        # City-adaptive IoU threshold: SpaceNet7 cities use τ=0.25 (benchmark
+        # standard); all other cities use the config value (default τ=0.50).
+        ref_source = str(ds.get("reference_source", "other")).lower().strip()
+        is_spacenet7 = ref_source in ("spacenet7", "spacenet")
+        tau_overlap = (
+            IOT_THRESHOLD_SPACENET7 if is_spacenet7
+            else float(vec_pre.get("iou_threshold", vec_pre.get("tau_overlap", IOT_THRESHOLD_DEFAULT)))
+        )
+        log.info(
+            "[%s] reference_source=%s → iou_threshold=%.2f",
+            dataset_id, ref_source, tau_overlap,
+        )
 
         # Size-bin config (used for per-bin metrics and figures)
         size_bins_cfg = self.cfg.get("size_bins", {})
@@ -186,6 +204,7 @@ class VectorValidationRunner(BaseValidationRunner):
             aoi_area_km2=aoi_km2,
             n_ref_buildings_loaded=n_ref_loaded,
             cand_buildings_loaded=cand_loaded_by_dataset,
+            iou_threshold=tau_overlap,
         )
         city_summary.to_parquet(
             metrics_dir / "vector_city_summary_all_datasets.parquet", index=False

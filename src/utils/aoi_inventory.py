@@ -343,10 +343,15 @@ def load_validation_datasets(cfg: dict, data_dir: Path) -> List[Dict]:
     df = df.dropna(subset=[id_col]).copy()
     df = df[df[id_col].str.strip() != ""]
 
-    # Identify reference file column
+    # Identify reference file and reference_source columns
     ref_col = next(
         (c for c in df.columns if "reference" in c.lower() and "file" in c.lower()), None
     )
+    ref_source_col = "reference_source" if "reference_source" in df.columns else None
+    if ref_source_col:
+        log.info("Tracker: reference_source column found.")
+    else:
+        log.warning("Tracker: no reference_source column — all cities will use default IoU threshold.")
 
     datasets: List[Dict] = []
 
@@ -411,16 +416,27 @@ def load_validation_datasets(cfg: dict, data_dir: Path) -> List[Dict]:
                             if p not in ref_paths:
                                 ref_paths.append(p)
 
+            # Read reference_source for this city (first non-empty value in group)
+            ref_source = "other"
+            if ref_source_col:
+                for _, row in group.iterrows():
+                    val = str(row.get(ref_source_col, "") or "").strip().lower()
+                    if val:
+                        ref_source = val
+                        break
+
             slug = dataset_id.replace("-", "_").replace(" ", "_")
             datasets.append({
-                "id":           dataset_id,
-                "slug":         slug,
-                "aoi":          aoi,
-                "sub_aois":     sub_aois,
-                "is_multi_aoi": len(sub_aois) > 1,
-                "ref_paths":    ref_paths,
+                "id":               dataset_id,
+                "slug":             slug,
+                "aoi":              aoi,
+                "sub_aois":         sub_aois,
+                "is_multi_aoi":     len(sub_aois) > 1,
+                "ref_paths":        ref_paths,
                 # Back-compat: single-file ref as before; None for multi-file cases
-                "ref_path":     ref_paths[0] if len(ref_paths) == 1 else None,
+                "ref_path":         ref_paths[0] if len(ref_paths) == 1 else None,
+                # IoU threshold selection: 'spacenet7' → τ=0.25; everything else → τ=0.50
+                "reference_source": ref_source,
             })
         except Exception as exc:
             log.warning(

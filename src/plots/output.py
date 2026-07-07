@@ -44,6 +44,7 @@ def summarize_city(
     aoi_area_km2: float = float("nan"),
     n_ref_buildings_loaded: int = 0,
     cand_buildings_loaded: Optional[Dict[str, int]] = None,
+    iou_threshold: float = 0.5,
 ) -> pd.DataFrame:
     """Aggregate tile-level metrics and match statistics into one row per dataset."""
     rows = []
@@ -136,14 +137,35 @@ def summarize_city(
             else float("nan")
         )
 
+        # Centroid-based reference building count: sum of ref_building_count_centroid
+        # across tiles (centroid-in-tile rule avoids double-counting edge buildings).
+        # Falls back to n_ref (tp+fn sum) if the column is missing.
+        n_ref_buildings = (
+            int(mds["ref_building_count_centroid"].sum())
+            if "ref_building_count_centroid" in mds.columns
+            else n_ref
+        )
+        # Candidate building count: prefer pre-tiling loaded count (no edge double-count);
+        # fall back to tp+fp tile sum.
+        n_cand_buildings = n_cand_loaded if n_cand_loaded > 0 else (tp + fp)
+        building_count_ratio = (
+            round(n_cand_buildings / n_ref_buildings, 4)
+            if n_ref_buildings > 0
+            else float("nan")
+        )
+
         rows.append({
             "city":                     city,
             "dataset":                  ds,
+            "iou_threshold":            iou_threshold,
             "n_sub_areas":              int(mds["sub_area_id"].nunique()) if "sub_area_id" in mds.columns else 1,
             "n_tiles":                  int(mds["tile_id"].nunique()),
             "n_ref_buildings_loaded":   n_ref_buildings_loaded,
             "n_cand_buildings_loaded":  n_cand_loaded,
             "count_ratio_loaded":       round(count_ratio_loaded, 4) if np.isfinite(count_ratio_loaded) else float("nan"),
+            "n_ref_buildings":          n_ref_buildings,
+            "n_cand_buildings":         n_cand_buildings,
+            "building_count_ratio":     building_count_ratio,
             "n_ref_total":              n_ref,
             "n_cand_total":             n_cand,
             "count_delta_total":        count_delta_total,
