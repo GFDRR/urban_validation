@@ -1,6 +1,7 @@
 import datetime
 import gc
 from pathlib import Path
+from typing import Dict, Optional
 
 import yaml
 import matplotlib
@@ -41,6 +42,8 @@ def summarize_city(
     metrics_df: pd.DataFrame,
     matches_df: pd.DataFrame,
     aoi_area_km2: float = float("nan"),
+    n_ref_buildings_loaded: int = 0,
+    cand_buildings_loaded: Optional[Dict[str, int]] = None,
 ) -> pd.DataFrame:
     """Aggregate tile-level metrics and match statistics into one row per dataset."""
     rows = []
@@ -126,11 +129,21 @@ def summarize_city(
         def _r(v):
             return round(v, 4) if not np.isnan(v) else float("nan")
 
+        n_cand_loaded = (cand_buildings_loaded or {}).get(ds, 0)
+        count_ratio_loaded = (
+            n_cand_loaded / n_ref_buildings_loaded
+            if n_ref_buildings_loaded > 0
+            else float("nan")
+        )
+
         rows.append({
             "city":                     city,
             "dataset":                  ds,
             "n_sub_areas":              int(mds["sub_area_id"].nunique()) if "sub_area_id" in mds.columns else 1,
             "n_tiles":                  int(mds["tile_id"].nunique()),
+            "n_ref_buildings_loaded":   n_ref_buildings_loaded,
+            "n_cand_buildings_loaded":  n_cand_loaded,
+            "count_ratio_loaded":       round(count_ratio_loaded, 4) if np.isfinite(count_ratio_loaded) else float("nan"),
             "n_ref_total":              n_ref,
             "n_cand_total":             n_cand,
             "count_delta_total":        count_delta_total,

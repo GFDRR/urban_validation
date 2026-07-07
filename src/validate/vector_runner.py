@@ -97,9 +97,10 @@ class VectorValidationRunner(BaseValidationRunner):
             dataset_id=dataset_id,
         )
         ref_sindex = ref_all.sindex
+        n_ref_loaded = len(ref_all)
         log.info(
             "[%s] Reference buildings: %d (from %d file(s))",
-            dataset_id, len(ref_all), len(existing_refs),
+            dataset_id, n_ref_loaded, len(existing_refs),
         )
 
         # Per-candidate runs
@@ -109,6 +110,7 @@ class VectorValidationRunner(BaseValidationRunner):
         per_ds_match_paths: List[Path] = []
         per_ds_size_bin_paths: List[Path] = []
         cand_areas_by_dataset: Dict[str, pd.Series] = {}
+        cand_loaded_by_dataset: Dict[str, int] = {}
 
         for cand_cfg in self.cfg["vector"]["datasets"]:
             if not cand_cfg.get("enabled", True):
@@ -128,7 +130,7 @@ class VectorValidationRunner(BaseValidationRunner):
             cand_path = candidate_files[0]
             log.info("[%s / %s] Candidate: %s", dataset_id, ds_name, cand_path.name)
 
-            tile_path, match_path, size_bin_path, cand_areas = self._run_candidate(
+            tile_path, match_path, size_bin_path, cand_areas, n_cand_loaded = self._run_candidate(
                 dataset_id=dataset_id,
                 ds_name=ds_name,
                 cand_path=cand_path,
@@ -152,6 +154,7 @@ class VectorValidationRunner(BaseValidationRunner):
                 per_ds_size_bin_paths.append(size_bin_path)
             if cand_areas is not None:
                 cand_areas_by_dataset[ds_name] = cand_areas
+            cand_loaded_by_dataset[ds_name] = n_cand_loaded
 
         # Capture reference areas before ref_all is freed
         ref_areas = ref_all["area_m2"].copy() if "area_m2" in ref_all.columns else pd.Series(dtype=float)
@@ -178,7 +181,12 @@ class VectorValidationRunner(BaseValidationRunner):
             metrics_dir / "vector_matches_all_datasets.parquet", index=False
         )
 
-        city_summary = summarize_city(dataset_id, metrics_all, matches_all, aoi_area_km2=aoi_km2)
+        city_summary = summarize_city(
+            dataset_id, metrics_all, matches_all,
+            aoi_area_km2=aoi_km2,
+            n_ref_buildings_loaded=n_ref_loaded,
+            cand_buildings_loaded=cand_loaded_by_dataset,
+        )
         city_summary.to_parquet(
             metrics_dir / "vector_city_summary_all_datasets.parquet", index=False
         )
@@ -266,17 +274,18 @@ class VectorValidationRunner(BaseValidationRunner):
         tau_boundary: float,
         size_bins: List[float],
         size_bin_labels: List[str],
-    ) -> Tuple[Optional[Path], Path, Optional[Path], Optional[pd.Series]]:
+    ) -> Tuple[Optional[Path], Path, Optional[Path], Optional[pd.Series], int]:
         """Run tile-level IoU matching for one candidate dataset.
 
         Returns
         -------
-        (tile_metrics_path, match_path, size_bin_path, cand_areas)
+        (tile_metrics_path, match_path, size_bin_path, cand_areas, n_cand_loaded)
             tile_metrics_path : per-dataset tile metrics parquet, or None if empty.
             match_path        : per-dataset consolidated matches parquet.
             size_bin_path     : per-dataset per-size-bin metrics parquet, or None.
             cand_areas        : Series of candidate building areas, or None if no
                                 candidates were loaded.
+            n_cand_loaded     : number of candidate buildings after filtering (pre-tiling).
         """
         cand_all = load_buildings(
             path=cand_path,
@@ -374,7 +383,8 @@ class VectorValidationRunner(BaseValidationRunner):
                 dataset_id, ds_name,
             )
 
-        # Capture candidate areas before cand_all is freed
+        # Capture candidate count and areas before cand_all is freed
+        n_cand_loaded = len(cand_all)
         cand_areas = (
             cand_all["area_m2"].copy() if "area_m2" in cand_all.columns else None
         )
@@ -383,4 +393,4 @@ class VectorValidationRunner(BaseValidationRunner):
         gc.collect()
 
         log_memory(f"{dataset_id}/{ds_name} done")
-        return returned_tile_path, match_out, size_bin_path, cand_areas
+        return returned_tile_path, match_out, size_bin_path, cand_areas, n_cand_loaded
