@@ -11,8 +11,8 @@ vector:
   preprocessing:
     min_area_m2: 20
     tile_size_m: 1000
-    tau_overlap: 0.5
-    tau_buffer_m: 2.0
+    iou_threshold: 0.5       # IoU ≥ this to count as a match; default 0.5 per PASCAL-VOC
+    tau_buffer_m: 2.0        # metres added to each geometry before IoU; 0 = no buffer
     tau_boundary: 2.0
     fix_invalid_geoms: true
 

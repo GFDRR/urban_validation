@@ -53,7 +53,7 @@ class VectorValidationRunner(BaseValidationRunner):
         vec_pre = self.cfg["vector"]["preprocessing"]
         min_area = float(vec_pre["min_area_m2"])
         tile_size = float(vec_pre["tile_size_m"])
-        tau_overlap = float(vec_pre["tau_overlap"])
+        tau_overlap = float(vec_pre.get("iou_threshold", vec_pre.get("tau_overlap", 0.5)))
         tau_buffer = float(vec_pre["tau_buffer_m"])
         tau_boundary = float(vec_pre["tau_boundary"])
         fix_geoms = bool(vec_pre.get("fix_invalid_geoms", True))
