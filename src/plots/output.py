@@ -119,9 +119,17 @@ def summarize_city(
 
             area_ref_sum  = float(dsmatches["area_ref"].sum())
             area_cand_sum = float(dsmatches["area_cand"].sum())
+            # Denominator is the TOTAL reference building area for the whole city
+            # (all ref buildings, matched + unmatched/FN) — not just TP-matched refs.
+            # Using only matched-ref area in the denominator overstates the bias when
+            # recall is low, because FN reference buildings are silently excluded.
+            # ref_area_total_m2 is the city-wide sum of ref building areas (computed
+            # per tile in compute_tile_metrics as ref_tile["area_m2"].sum()).
+            # Numerator is unchanged: (Σ matched cand area − Σ matched ref area).
             signed_area_bias = (
-                (area_cand_sum - area_ref_sum) / area_ref_sum
-                if area_ref_sum > 0 else float("nan")
+                (area_cand_sum - area_ref_sum) / ref_area_total_m2
+                if np.isfinite(ref_area_total_m2) and ref_area_total_m2 > 0
+                else float("nan")
             )
         else:
             iou_mean = iou_median = iou_p25 = iou_p75 = bf_mean = 0.0
@@ -190,8 +198,8 @@ def summarize_city(
             "rel_area_error_median_tp": _r(rel_area_median),
             "signed_area_bias_tp":      _r(signed_area_bias),
             # Percentage form of signed_area_bias_tp.
-            # Denominator is sum of matched (TP) reference area only — FN buildings
-            # are excluded. Use total_area_bias for a whole-city view.
+            # Numerator is matched (TP) area difference; denominator is TOTAL city
+            # reference area (matched + FN), so low recall no longer inflates it.
             "signed_area_bias_pct_tp":  _r(signed_area_bias * 100.0) if not np.isnan(signed_area_bias) else float("nan"),
             # Total area bias: (Σ cand_all − Σ ref_all) / Σ ref_all
             # Denominator includes FN buildings; numerator includes FP candidates.
