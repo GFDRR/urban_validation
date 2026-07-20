@@ -38,7 +38,7 @@ One row per **city × candidate dataset** (`overture`, `gba`, `globfp`).
 | # | Column | Definition |
 |---|---|---|
 | 1 | `city` | City slug (e.g. `usa-brentwood`, `jam-kingston-sn7`). |
-| 2 | `dataset` | Candidate dataset: `overture` \| `gba` \| `globfp`. |
+| 2 | `dataset` | Candidate dataset: `overture` (Overture Maps) \| `gba` (**Global Building Atlas** — *not* Google Open Buildings) \| `globfp` (3D-GloBFP). |
 | 3 | `iou_threshold` | IoU threshold (τ) used for matching in this city. **0.25** for SpaceNet-reference cities, **0.50** otherwise. |
 | 4 | `n_sub_areas` | Number of sub-AOIs the city AOI was split into (1 for single-AOI cities). |
 | 5 | `n_tiles` | Number of 1 km evaluation tiles. |
