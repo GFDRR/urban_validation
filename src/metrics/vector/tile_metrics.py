@@ -21,6 +21,7 @@ logger = logging.getLogger("Validation_Metrics")
 
 
 def _safe_quantile(s: pd.Series, q: float) -> float:
+    """Return the q-quantile of a series, or 0.0 when it is empty."""
     return float(s.quantile(q)) if len(s) else 0.0
 
 
@@ -35,6 +36,7 @@ def compute_tile_metrics(
     dataset_name,
     tile_geom=None,
 ):
+    """Compute per-tile vector metrics and return them with the matches DataFrame."""
     matches_df, ref_unmatched, cand_unmatched = match_buildings_iou(
         ref_tile, cand_tile, tau_overlap, tau_buffer_m=tau_buffer_m
     )

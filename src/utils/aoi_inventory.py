@@ -66,6 +66,7 @@ def _extract_sub_aoi_id(filename: str) -> str:
 
 
 def _load_aois_from_csv(config) -> List[Dict]:
+    """Load dataset AOIs from an inventory CSV, assembling per-city sub-AOI records."""
     aoi_cfg = config.aoi
     csv_path = Path(aoi_cfg.path)
     base_dir = Path(aoi_cfg.base_dir)
@@ -162,6 +163,7 @@ def _load_aois_from_csv(config) -> List[Dict]:
 
 
 def _load_aoi_from_file(config, aoi_path: Path) -> List[Dict]:
+    """Load a single-file AOI into a one-entry dataset record."""
     aoi_cfg = config.aoi
     aoi = load_aoi(
         aoi_path,

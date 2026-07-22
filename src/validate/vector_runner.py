@@ -49,6 +49,7 @@ class VectorValidationRunner(BaseValidationRunner):
     sentinel_name = "vector_metrics_tiles_all_datasets.parquet"
 
     def run(self, ds: dict) -> bool:
+        """Run tile-level IoU vector validation for one dataset; return True on success."""
         dataset_id = ds["id"]
 
         existing_refs = self._resolve_ref_paths(ds)

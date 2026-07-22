@@ -441,6 +441,7 @@ def process_city(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    """Parse CLI arguments and build merged SN7 city reference and AOI files."""
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,

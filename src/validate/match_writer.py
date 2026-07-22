@@ -38,6 +38,7 @@ class MatchChunkWriter:
         *,
         flush_interval: int = 100,
     ):
+        """Initialize the MatchChunkWriter with output directory, dataset name, and flush interval."""
         self.metrics_dir = Path(metrics_dir)
         self.ds_name = ds_name
         self.flush_interval = int(flush_interval)

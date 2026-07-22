@@ -1,10 +1,11 @@
+"""City- and dataset-level summary tables and matplotlib figure helpers for validation output."""
 import datetime
 import gc
 from pathlib import Path
 from typing import Dict, Optional
 
 import yaml
-import matplotlib
+import matplotlib  # UNUSED (only matplotlib.pyplot / _pylab_helpers.Gcf are used)
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -23,6 +24,7 @@ _DEFAULT_SIZE_BINS   = [0, 25, 50, 100, 500, 1000, np.inf]
 _DEFAULT_SIZE_LABELS = ["<25", "25–50", "50–100", "100–500", "500–1000", ">1000"]
 
 def load_config(path: str | Path) -> dict:
+    """Load and parse a YAML config file into a dict."""
     with open(path, "r") as fp:
         return yaml.safe_load(fp)
 
@@ -33,6 +35,7 @@ def fig_name(city: str, stem: str, ext: str = "png") -> str:
 
 
 def save_figure(fig: plt.Figure, figures_dir: Path, filename: str, dpi: int = 200) -> None:
+    """Save a matplotlib figure to the figures directory, creating it if needed."""
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(figures_dir / filename, dpi=dpi, bbox_inches="tight")
@@ -121,6 +124,7 @@ def summarize_city(
             rel_area_mean = rel_area_median = float("nan")
 
         def _r(v):
+            """Round a value to 4 decimals, passing NaN through."""
             return round(v, 4) if not np.isnan(v) else float("nan")
 
         n_cand_loaded = (cand_buildings_loaded or {}).get(ds, 0)
@@ -556,6 +560,7 @@ def summarize_raster_city(
         )
 
         def _r(v):
+            """Round a value to 4 decimals, passing non-finite values through as NaN."""
             return round(float(v), 4) if np.isfinite(v) else float("nan")
 
         row = {

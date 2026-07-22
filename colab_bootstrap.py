@@ -42,6 +42,7 @@ DEFAULT_BRANCH = "fix/pipeline-audit"
 
 
 def _run(cmd: list[str]) -> str:
+    """Run a subprocess and return its stdout, raising on failure."""
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
         raise RuntimeError(f"command failed: {' '.join(cmd)}\n{res.stderr.strip()}")

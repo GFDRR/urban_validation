@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 
 
 def run_download(data_config: str) -> None:
+    """Download all enabled vector and raster datasets for the configured AOIs."""
     downloader = UrbanDownloader(data_config)
     log.info("Downloading: vector datasets")
     downloader.download_vector()
@@ -45,6 +46,7 @@ def run_download(data_config: str) -> None:
 
 
 def run_vector_validation(val_config: str) -> None:
+    """Validate building footprint vectors against reference data for all cities."""
     log.info("Vector validation: validating building footprints against reference data.")
     results = UrbanValidator(val_config).validate_vector()
     ok = sum(v for v in results.values())
@@ -52,6 +54,7 @@ def run_vector_validation(val_config: str) -> None:
 
 
 def run_raster_validation(val_config: str) -> None:
+    """Validate raster datasets against reference data for all cities."""
     log.info("Raster validation: validating raster datasets against reference data.")
     results = UrbanValidator(val_config).validate_raster()
     ok = sum(v for v in results.values())
@@ -59,6 +62,7 @@ def run_raster_validation(val_config: str) -> None:
 
 
 def main() -> None:
+    """Parse CLI arguments and run the download and validation pipeline stages."""
     parser = argparse.ArgumentParser(description="Urban Validation pipeline runner")
     parser.add_argument("--data-config", default="configs/data_configs.yaml")
     parser.add_argument("--val-config", default="configs/validation_configs.yaml")

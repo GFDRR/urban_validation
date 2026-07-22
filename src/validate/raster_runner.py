@@ -39,6 +39,7 @@ class RasterValidationRunner(BaseValidationRunner):
     sentinel_name = "raster_metrics_tiles_all_datasets.parquet"
 
     def run(self, ds: dict) -> bool:
+        """Run tile-level pixel raster validation for one dataset; return True on success."""
         dataset_id = ds["id"]
 
         rast_cfg = self.cfg.get("raster", {})
