@@ -67,8 +67,8 @@ def main() -> None:
     parser.add_argument("--skip-raster", action="store_true")
     parser.add_argument(
         "--project-root",
-        default="/content/drive/MyDrive/Gates Foundation/Building Dataset Validation",
-        help="Project root to use in Colab.",
+        default=".",  # ← set this to your project/data root (e.g. a mounted Drive path in Colab)
+        help="Project root containing configs/ and data/ (default: current directory).",
     )
 
     try:

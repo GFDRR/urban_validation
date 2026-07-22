@@ -1,4 +1,4 @@
-root_dir: /content/drive/MyDrive/Gates Foundation/Building Dataset Validation
+root_dir: .   # ← project root (your working directory); set to an absolute path if running outside the repo
 data_dir: data/01_raw
 aoi_tracker: data/02_interim/aoi_tracker.csv
 
