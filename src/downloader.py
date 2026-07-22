@@ -19,7 +19,6 @@ Prepared by: Rufai Omowunmi Balogun
 from __future__ import annotations
 
 import logging
-from pathlib import Path  # UNUSED — flagged for cleanup (author: confirm/remove)
 from typing import Dict, List
 
 from src.config import load_config

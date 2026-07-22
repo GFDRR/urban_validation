@@ -22,22 +22,6 @@ logger = logging.getLogger("Validation_Metrics")
 _SJOIN_CHUNK_SIZE = int(os.environ.get("SJOIN_CHUNK_SIZE", 50_000))
 
 
-# UNUSED — superseded by the vectorised path in match_buildings_iou (author: confirm/remove)
-def _iou_with_buffer(ref_geom, cand_geom, tau_buffer_m: float = 0.0) -> float:
-    """IoU with optional buffering to tolerate small georegistration offsets."""
-    if tau_buffer_m and tau_buffer_m > 0:
-        ref_geom = ref_geom.buffer(tau_buffer_m)
-        cand_geom = cand_geom.buffer(tau_buffer_m)
-
-    inter = ref_geom.intersection(cand_geom).area
-    if inter <= 0:
-        return 0.0
-    union = ref_geom.union(cand_geom).area
-    if union <= 0:
-        return 0.0
-    return float(inter / union)
-
-
 def match_buildings_iou(
     ref_tile,
     cand_tile,

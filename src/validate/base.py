@@ -17,14 +17,13 @@ import gc
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Optional, Tuple  # UNUSED: Optional
+from typing import List, Tuple
 
 import geopandas as gpd
 import pandas as pd
 
 from src.utils.geometry import get_projected_crs
 from src.utils.buildings import load_buildings
-from src.utils.memory import log_memory  # UNUSED — flagged for cleanup (author: confirm/remove)
 from src.utils.tiling import make_tiles
 
 log = logging.getLogger("UrbanValidator.runner")

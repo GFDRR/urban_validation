@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import yaml
-import matplotlib  # UNUSED (only matplotlib.pyplot / _pylab_helpers.Gcf are used)
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd

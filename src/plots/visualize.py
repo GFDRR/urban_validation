@@ -5,7 +5,6 @@ contain code for reporting output visualizations
 import pandas as pd
 import geopandas as gpd
 import folium
-from folium.plugins import MarkerCluster, GroupedLayerControl  # UNUSED — flagged for cleanup (author: confirm/remove)
 from pathlib import Path
 
 COUNTRY_CENTROIDS = {
