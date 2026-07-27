@@ -34,6 +34,8 @@ def compute_tile_metrics(
     tau_boundary_m,
     tile_id,
     dataset_name,
+    *,
+    tile_area_km2: float = np.nan,
     tile_geom=None,
 ):
     """Compute per-tile vector metrics and return them with the matches DataFrame."""
@@ -102,6 +104,31 @@ def compute_tile_metrics(
     cand_area_total_m2 = (
         float(cand_tile["area_m2"].sum()) if "area_m2" in cand_tile.columns else np.nan
     )
+    mean_ref_building_area_m2 = (
+        ref_area_total_m2 / n_ref if n_ref > 0 and np.isfinite(ref_area_total_m2) else np.nan
+    )
+
+    # tile_geom and ref_tile are both in the city's projected CRS (metres),
+    # set upstream in VectorValidationRunner._build_tiles() / _load_reference_buildings().
+    if tile_geom is not None:
+        tile_area_km2 = tile_geom.area / 1e6
+
+        # Centroid-based assignment: only count ref buildings whose centroid falls inside
+        # the tile. This avoids double-counting edge buildings across adjacent tiles.
+        if len(ref_tile) > 0:
+            centroids_in = ref_tile[ref_tile.geometry.centroid.within(tile_geom)]
+            ref_building_count_centroid  = len(centroids_in)
+            mean_ref_building_area_m2    = float(centroids_in.geometry.area.mean()) if ref_building_count_centroid > 0 else float('nan')
+            ref_building_density_per_km2 = ref_building_count_centroid / tile_area_km2 if tile_area_km2 > 0 else float('nan')
+        else:
+            ref_building_count_centroid  = 0
+            mean_ref_building_area_m2    = float('nan')
+            ref_building_density_per_km2 = float('nan')
+    else:
+        tile_area_km2                = float('nan')
+        ref_building_count_centroid  = 0
+        mean_ref_building_area_m2    = float('nan')
+        ref_building_density_per_km2 = float('nan')
 
     # tile_geom and ref_tile are both in the city's projected CRS (metres),
     # set upstream in VectorValidationRunner._build_tiles() / _load_reference_buildings().
@@ -147,6 +174,7 @@ def compute_tile_metrics(
         "mean_rel_area_error": mean_rel_area_error,
         "signed_area_bias": signed_area_bias,
         "ref_area_total_m2": ref_area_total_m2,
+        "mean_ref_building_area_m2": mean_ref_building_area_m2,
         "cand_area_total_m2": cand_area_total_m2,
         "ref_building_count_centroid":  ref_building_count_centroid,
         "mean_ref_building_area_m2":    mean_ref_building_area_m2,

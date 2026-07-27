@@ -327,6 +327,7 @@ class VectorValidationRunner(BaseValidationRunner):
         for tile_row in tiles.itertuples():
             tile_geom = tile_row.geometry
             tile_id = int(tile_row.tile_id)
+            tile_area_km2 = tile_geom.area / 1e6
 
             ref_tile = subset_by_tile(ref_all, ref_sindex, tile_geom)
             cand_tile = subset_by_tile(cand_all, cand_sindex, tile_geom)
@@ -338,6 +339,7 @@ class VectorValidationRunner(BaseValidationRunner):
                 ref_tile, dataset_id, cand_tile,
                 tau_overlap, tau_buffer, tau_boundary,
                 tile_id, ds_name,
+                tile_area_km2=tile_area_km2,
                 tile_geom,
             )
             ds_tile_metrics.append(metrics)

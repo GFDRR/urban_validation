@@ -1,6 +1,6 @@
 root_dir: .   # ← project root (your working directory); set to an absolute path if running outside the repo
 data_dir: data/01_raw
-aoi_tracker: data/02_interim/aoi_tracker.csv
+aoi_tracker: data/02_interim/aoi_tracker_sn7.csv
 
 # Used by figure generation in src/plots/figures.py.
 size_bins:
@@ -11,8 +11,8 @@ vector:
   preprocessing:
     min_area_m2: 20
     tile_size_m: 1000
-    iou_threshold: 0.5       # IoU ≥ this to count as a match; default 0.5 per PASCAL-VOC
-    tau_buffer_m: 2.0        # metres added to each geometry before IoU; 0 = no buffer
+    tau_overlap: 0.5
+    tau_buffer_m: 2.0
     tau_boundary: 2.0
     fix_invalid_geoms: true
 
