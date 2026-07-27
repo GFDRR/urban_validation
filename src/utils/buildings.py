@@ -27,6 +27,7 @@ _AREA_CHUNK_SIZE = int(os.environ.get("AREA_CHUNK_SIZE", 50_000))
 
 
 def _read_buildings_file(path: Path, logger=None) -> gpd.GeoDataFrame:
+    """Read a building footprint file, retrying with invalid-geometry handling on parse errors."""
     if path.suffix.lower() in {".parquet", ".geoparquet"}:
         return gpd.read_parquet(path)
     try:

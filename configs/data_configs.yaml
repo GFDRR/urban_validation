@@ -1,6 +1,6 @@
 aoi:
   path: data/02_interim/aoi_tracker.csv
-  base_dir: /content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/01_raw
+  base_dir: data/01_raw   # ← path to your raw data, relative to the project root (or an absolute path)
   id_col: Dataset code
   crs_out: EPSG:4326
   buffer_meters: 0
@@ -29,7 +29,7 @@ output:
   overwrite: false
   use_base_dir_for_output: true
   # Used only when use_base_dir_for_output is false.
-  root_dir: /content/drive/MyDrive/Gates Foundation/Building Dataset Validation/outputs/
+  root_dir: outputs/   # ← output directory, relative to the project root (or an absolute path)
 
 ee_project: urbanvalidation
 
@@ -62,7 +62,7 @@ datasets:
 
   wsf_tracker:
     enabled: true
-    drive_root: /content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/WSFsoftRelease
+    drive_root: data/WSFsoftRelease   # ← folder holding WSF Tracker .tif tiles, relative to the project root
     tif_glob: "*.tif"
     make_mosaic: true
     keep_tile_copies: false

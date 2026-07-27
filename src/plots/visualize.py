@@ -5,7 +5,6 @@ contain code for reporting output visualizations
 import pandas as pd
 import geopandas as gpd
 import folium
-from folium.plugins import MarkerCluster, GroupedLayerControl
 from pathlib import Path
 
 COUNTRY_CENTROIDS = {
@@ -24,11 +23,13 @@ COUNTRY_CENTROIDS = {
 }
 
 def _country_centroid(dataset_id: str):
+    """Return the (lat, lon) centroid for a dataset's country-code prefix, or (None, None)."""
     prefix = dataset_id[:3].lower()
     return COUNTRY_CENTROIDS.get(prefix, (None, None))
 
 
 def _is_truthy(value) -> bool:
+    """Interpret a scalar or string value as a boolean, treating NaN as False."""
     if pd.isna(value):
         return False
     if isinstance(value, bool):
@@ -39,12 +40,14 @@ def _is_truthy(value) -> bool:
 
 
 def _split_pipe_values(value) -> list[str]:
+    """Split a pipe-delimited string into a list of trimmed, non-empty tokens."""
     if pd.isna(value):
         return []
     return [part.strip() for part in str(value).split("|") if part.strip()]
 
 
 def _build_dataset_rows(raw_df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate raw inventory rows into one summary record per dataset code."""
     records = []
     for dataset_id, grp in raw_df.groupby("Dataset code", dropna=True, sort=False):
         dataset_id = str(dataset_id).strip()
@@ -214,11 +217,7 @@ def build_inventory_map(
                         "fillOpacity": 0.08,
                         "fillColor": c,
                     },
-                    tooltip=folium.GeoJsonTooltip(
-                        fields=[],
-                        aliases=[],
-                        sticky=True,
-                    ) if False else folium.Tooltip(dataset_id),
+                    tooltip=folium.Tooltip(dataset_id),
                 ).add_to(layer_aoi)
             except Exception as e:
                 print(f"[WARN] {dataset_id}: polygon layer failed — {e}")

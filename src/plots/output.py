@@ -1,9 +1,10 @@
+"""City- and dataset-level summary tables and matplotlib figure helpers for validation output."""
 import datetime
 import gc
 from pathlib import Path
+from typing import Dict, Optional
 
 import yaml
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -22,6 +23,7 @@ _DEFAULT_SIZE_BINS   = [0, 25, 50, 100, 500, 1000, np.inf]
 _DEFAULT_SIZE_LABELS = ["<25", "25–50", "50–100", "100–500", "500–1000", ">1000"]
 
 def load_config(path: str | Path) -> dict:
+    """Load and parse a YAML config file into a dict."""
     with open(path, "r") as fp:
         return yaml.safe_load(fp)
 
@@ -32,6 +34,7 @@ def fig_name(city: str, stem: str, ext: str = "png") -> str:
 
 
 def save_figure(fig: plt.Figure, figures_dir: Path, filename: str, dpi: int = 200) -> None:
+    """Save a matplotlib figure to the figures directory, creating it if needed."""
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(figures_dir / filename, dpi=dpi, bbox_inches="tight")
@@ -41,6 +44,9 @@ def summarize_city(
     metrics_df: pd.DataFrame,
     matches_df: pd.DataFrame,
     aoi_area_km2: float = float("nan"),
+    n_ref_buildings_loaded: int = 0,
+    cand_buildings_loaded: Optional[Dict[str, int]] = None,
+    iou_threshold: float = 0.5,
 ) -> pd.DataFrame:
     """Aggregate tile-level metrics and match statistics into one row per dataset."""
     rows = []
@@ -112,25 +118,50 @@ def summarize_city(
 
             rel_area_mean   = float(rel_area.mean())
             rel_area_median = float(rel_area.median())
-
-            area_ref_sum  = float(dsmatches["area_ref"].sum())
-            area_cand_sum = float(dsmatches["area_cand"].sum())
-            signed_area_bias = (
-                (area_cand_sum - area_ref_sum) / area_ref_sum
-                if area_ref_sum > 0 else float("nan")
-            )
         else:
             iou_mean = iou_median = iou_p25 = iou_p75 = bf_mean = 0.0
-            rel_area_mean = rel_area_median = signed_area_bias = float("nan")
+            rel_area_mean = rel_area_median = float("nan")
 
         def _r(v):
+            """Round a value to 4 decimals, passing NaN through."""
             return round(v, 4) if not np.isnan(v) else float("nan")
+
+        n_cand_loaded = (cand_buildings_loaded or {}).get(ds, 0)
+        count_ratio_loaded = (
+            n_cand_loaded / n_ref_buildings_loaded
+            if n_ref_buildings_loaded > 0
+            else float("nan")
+        )
+
+        # Centroid-based reference building count: sum of ref_building_count_centroid
+        # across tiles (centroid-in-tile rule avoids double-counting edge buildings).
+        # Falls back to n_ref (tp+fn sum) if the column is missing.
+        n_ref_buildings = (
+            int(mds["ref_building_count_centroid"].sum())
+            if "ref_building_count_centroid" in mds.columns
+            else n_ref
+        )
+        # Candidate building count: prefer pre-tiling loaded count (no edge double-count);
+        # fall back to tp+fp tile sum.
+        n_cand_buildings = n_cand_loaded if n_cand_loaded > 0 else (tp + fp)
+        building_count_ratio = (
+            round(n_cand_buildings / n_ref_buildings, 4)
+            if n_ref_buildings > 0
+            else float("nan")
+        )
 
         rows.append({
             "city":                     city,
             "dataset":                  ds,
+            "iou_threshold":            iou_threshold,
             "n_sub_areas":              int(mds["sub_area_id"].nunique()) if "sub_area_id" in mds.columns else 1,
             "n_tiles":                  int(mds["tile_id"].nunique()),
+            "n_ref_buildings_loaded":   n_ref_buildings_loaded,
+            "n_cand_buildings_loaded":  n_cand_loaded,
+            "count_ratio_loaded":       round(count_ratio_loaded, 4) if np.isfinite(count_ratio_loaded) else float("nan"),
+            "n_ref_buildings":          n_ref_buildings,
+            "n_cand_buildings":         n_cand_buildings,
+            "building_count_ratio":     building_count_ratio,
             "n_ref_total":              n_ref,
             "n_cand_total":             n_cand,
             "count_delta_total":        count_delta_total,
@@ -153,11 +184,9 @@ def summarize_city(
             "boundary_f_meanpair_tp":   _r(bf_mean),
             "rel_area_error_mean_tp":   _r(rel_area_mean),
             "rel_area_error_median_tp": _r(rel_area_median),
-            "signed_area_bias_tp":      _r(signed_area_bias),
-            # Percentage form of signed_area_bias_tp.
-            # Denominator is sum of matched (TP) reference area only — FN buildings
-            # are excluded. Use total_area_bias for a whole-city view.
-            "signed_area_bias_pct_tp":  _r(signed_area_bias * 100.0) if not np.isnan(signed_area_bias) else float("nan"),
+            # NOTE: the old matched-only "signed_area_bias_tp" / "signed_area_bias_pct_tp"
+            # columns were removed — they were redundant with (and confusingly different
+            # from) total_area_bias below, which is the correct city-wide area bias.
             # Total area bias: (Σ cand_all − Σ ref_all) / Σ ref_all
             # Denominator includes FN buildings; numerator includes FP candidates.
             # Equivalent to the raster signed_area_bias — measures whether the
@@ -530,6 +559,7 @@ def summarize_raster_city(
         )
 
         def _r(v):
+            """Round a value to 4 decimals, passing non-finite values through as NaN."""
             return round(float(v), 4) if np.isfinite(v) else float("nan")
 
         row = {

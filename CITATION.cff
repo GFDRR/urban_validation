@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this software or its outputs, please cite it as below."
+title: "Assessment of Satellite-derived Building Datasets"
+abstract: >-
+  A config-driven pipeline for downloading and benchmarking global
+  building-footprint (vector) and settlement-layer (raster) datasets against
+  AOI-specific reference building footprints.
+type: software
+authors:
+  - family-names: Balogun
+    given-names: Rufai Omowunmi
+  - family-names: Gevaert
+    given-names: Caroline Margaux
+  - family-names: Mirindi
+    given-names: Derrick
+  - family-names: Opdyke
+    given-names: Aaron
+  - family-names: Riom
+    given-names: Capucine Anne Veronique
+  - family-names: Chrzanowski
+    given-names: Pierre
+  - family-names: Anderson
+    given-names: Edward Charles
+year: 2026
+version: "0.1.0"
+license: MIT
+url: "https://github.com/GFDRR/urban_validation"
+repository-code: "https://github.com/GFDRR/urban_validation"

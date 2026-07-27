@@ -33,6 +33,7 @@ class BaseRunner(ABC):
     name: str = "base"
 
     def __init__(self, config, source_cfg, *, overwrite: bool = False):
+        """Initialize the BaseRunner with config, source config, and overwrite flag."""
         self.config = config
         self.source_cfg = source_cfg
         self.overwrite = overwrite
@@ -52,6 +53,7 @@ class BaseVectorRunner(BaseRunner):
     """
 
     def __init__(self, config, source_cfg, *, overwrite: bool = False):
+        """Initialize the BaseVectorRunner and defer the DuckDB connection binding."""
         super().__init__(config, source_cfg, overwrite=overwrite)
         self.con = None  # set by main downloader before calling run()
 
@@ -145,6 +147,7 @@ class BaseVectorRunner(BaseRunner):
     # -----------------------------------------------------------------
 
     def _tag_vector_output(self, parquet_path: Path, ds: dict) -> None:
+        """Tag buildings in a vector parquet output with their containing sub-AOI."""
         if not parquet_path.exists():
             return
 

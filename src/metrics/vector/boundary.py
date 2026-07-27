@@ -13,9 +13,13 @@ logger = logging.getLogger("Validation_Metrics")
 
 def boundary_f_pair(ref_geom, cand_geom, tau_boundary_m: float) -> float:
     """Boundary F for a single matched pair (length-within-tolerance)."""
-    rb = ref_geom.boundary
-    cb = cand_geom.boundary
-    if rb.length == 0 or cb.length == 0:
+    # .boundary is None for a GeometryCollection, which make_valid() can produce
+    # when repairing a self-intersecting footprint. Treat any null/degenerate
+    # boundary as "no boundary agreement" rather than letting it raise — one bad
+    # geometry must not abort the whole city.
+    rb = ref_geom.boundary if ref_geom is not None else None
+    cb = cand_geom.boundary if cand_geom is not None else None
+    if rb is None or cb is None or rb.length == 0 or cb.length == 0:
         return 0.0
 
     rb_buf = rb.buffer(tau_boundary_m)
@@ -42,12 +46,16 @@ def compute_boundary_f_for_tile(ref_tile, cand_tile, matches_df, tau_boundary_m)
 
     # union_all() on many boundaries creates a large multi-geometry; free
     # the per-building boundary series immediately after unioning.
-    ref_bound = ref_geoms.boundary.union_all()
+    # .boundary can be None per-geometry (e.g. GeometryCollection from
+    # make_valid()); drop those before unioning so one bad footprint cannot
+    # abort the tile.
+    ref_bound = ref_geoms.boundary.dropna().union_all()
     del ref_geoms
-    cand_bound = cand_geoms.boundary.union_all()
+    cand_bound = cand_geoms.boundary.dropna().union_all()
     del cand_geoms
 
-    if ref_bound.length == 0 or cand_bound.length == 0:
+    if (ref_bound is None or cand_bound is None
+            or ref_bound.length == 0 or cand_bound.length == 0):
         return 0.0
 
     ref_buffer = ref_bound.buffer(tau_boundary_m)

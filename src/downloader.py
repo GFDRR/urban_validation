@@ -19,7 +19,6 @@ Prepared by: Rufai Omowunmi Balogun
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Dict, List
 
 from src.config import load_config
@@ -59,6 +58,7 @@ class UrbanDownloader:
     """
 
     def __init__(self, config_path: str):
+        """Initialize the UrbanDownloader from a config path and load the AOI inventory."""
         self.config = load_config(config_path)
         self.overwrite = self.config.output.overwrite
         self.datasets = load_all_aois(self.config)
@@ -155,6 +155,7 @@ class UrbanDownloader:
     # -----------------------------------------------------------------
 
     def _build_vector_runners(self) -> List:
+        """Build the list of enabled vector download runners from the config."""
         cfg = self.config
         runners: List = []
 
@@ -180,6 +181,7 @@ class UrbanDownloader:
         return runners
 
     def _build_raster_runners(self) -> List:
+        """Build the list of enabled raster download runners from the config."""
         cfg = self.config
         sources = cfg.datasets
         runners: List = []
