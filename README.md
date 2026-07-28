@@ -4,7 +4,7 @@
 [Rufai Omowunmi Balogun](https://github.com/Ruphai),
 [Caroline Margaux Gevaert](https://github.com/CGevaert), 
 [Derrick Mirindi](https://github.com/Derrickmirindi), 
-[Aaron Opdyke](),
+[Aaron Opdyke](https://github.com/aaronopdyke),
 [Capucine Anne Veronique Riom](https://github.com/CapsR), 
 [Pierre Chrzanowski](https://github.com/pzwsk), and 
 [Edward Charles Anderson]()
