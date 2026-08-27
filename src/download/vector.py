@@ -30,10 +30,12 @@ class OvertureRunner(BaseVectorRunner):
     name = "overture"
 
     def __init__(self, config, source_cfg, *, overwrite: bool = False, base_path: str):
+        """Initialize the OvertureRunner with config, source config, and S3 base path."""
         super().__init__(config, source_cfg, overwrite=overwrite)
         self.base_path = base_path
 
     def run(self, ds: dict, out_root: Path) -> List[str]:
+        """Extract Overture building footprints clipped to the AOI, one file per type."""
         theme = self.source_cfg.theme
         types = self.source_cfg.types or []
         outputs: List[str] = []
@@ -59,6 +61,7 @@ class GBARunner(BaseVectorRunner):
     name = "gba"
 
     def run(self, ds: dict, out_root: Path) -> List[str]:
+        """Extract Global Building Atlas footprints clipped to the AOI."""
         glob = str(self.source_cfg.s3_url).rstrip("/")
         if "*" not in glob:
             glob += "/*.parquet"
@@ -81,6 +84,7 @@ class GloBFPRunner(BaseVectorRunner):
     name = "globfp"
 
     def __init__(self, config, source_cfg, *, overwrite: bool = False):
+        """Initialize the GloBFPRunner and defer world-grid resolution."""
         super().__init__(config, source_cfg, overwrite=overwrite)
         self._world_grid: Path | None = None
 
@@ -89,6 +93,7 @@ class GloBFPRunner(BaseVectorRunner):
         self._world_grid = ensure_world_grid(self.config)
 
     def run(self, ds: dict, out_root: Path) -> List[str]:
+        """Download GloBFP grid tiles for the AOI and merge them into one parquet."""
         if self._world_grid is None:
             self.prepare()
 

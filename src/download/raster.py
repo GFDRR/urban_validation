@@ -47,6 +47,7 @@ class OBTRunner(BaseRasterRunner):
     name = "google_open_buildings_temporal"
 
     def run(self, ds: dict, out_root: Path) -> List[str]:
+        """Download yearly OBT rasters for the dataset AOI and return output paths."""
         cfg = self.source_cfg
         aoi_ee = aoi_gdf_to_ee_geometry(ds["aoi"])
         region = ee_geometry_to_region(aoi_ee)
@@ -91,6 +92,7 @@ class TEMPORunner(BaseRasterRunner):
     name = "microsoft_tempo"
 
     def run(self, ds: dict, out_root: Path) -> List[str]:
+        """Download, reproject, mosaic, and clip Microsoft TEMPO tiles to the AOI."""
         cfg = self.source_cfg
         target_crs = "EPSG:4326"
         tile_cache = Path(cfg.tile_cache_dir)
@@ -189,6 +191,7 @@ class GHSLRunner(BaseRasterRunner):
     name = "ghsl"
 
     def run(self, ds: dict, out_root: Path) -> List[str]:
+        """Download GHSL product rasters per product and year for the AOI."""
         cfg = self.source_cfg
         aoi_ee = aoi_gdf_to_ee_geometry(ds["aoi"])
         region = ee_geometry_to_region(aoi_ee)
@@ -258,6 +261,7 @@ class WSFTrackerRunner(BaseRasterRunner):
     name = "wsf_tracker"
 
     def run(self, ds: dict, out_root: Path) -> List[str]:
+        """Select, copy, and mosaic WSF Tracker tiles intersecting the AOI."""
         cfg = self.source_cfg
         drive_root = Path(cfg.drive_root)
         if not drive_root.exists():

@@ -27,7 +27,25 @@ The repository is set up to run over the AOIs listed in `data/02_interim/aoi_tra
 
 ![AOIs with high quality references](figures/reference_data_area.png)
 
-Reference dataset used for benchmarking is publicly accessible here: 
+### Reference (benchmark) data sources
+The reference footprints used as ground truth come from:
+- **HOTOSM** — Humanitarian OpenStreetMap (https://www.hotosm.org)
+- **World Bank Data Catalog** (https://datacatalog.worldbank.org)
+- **University of Edinburgh** building datasets
+- **SpaceNet 7** — Multi-Temporal Urban Development (https://spacenet.ai/sn7-challenge/)
+
+### Candidate datasets evaluated
+| Dataset | Type | Source | Licence |
+|---|---|---|---|
+| Overture Maps | vector | https://overturemaps.org | ODbL / CDLA-Permissive 2.0 |
+| Global Building Atlas (GBA) | vector | https://source.coop/repositories/tge-labs/globalbuildingatlas | CC-BY-4.0 *(confirm)* |
+| 3D-GloBFP | vector | https://zenodo.org/records/15487006 | CC-BY-4.0 |
+| Google Open Buildings Temporal (OBT) | raster | https://sites.research.google/open-buildings/ | CC-BY-4.0 / ODbL |
+| Microsoft TEMPO | raster | https://opendata.aiforgood.ai | *(confirm licence)* |
+| WSF Tracker | raster | DLR World Settlement Footprint (https://www.dlr.de/en) | CC-BY-4.0 *(confirm)* |
+| GHSL Built-S | raster | https://ghsl.jrc.ec.europa.eu | Free & open (European Commission) |
+
+> Licences marked *(confirm)* should be verified against the provider's current terms before redistribution. 
 
 
 ## Validation approach
@@ -70,11 +88,38 @@ Configuration is split across two files:
 ### Setup requirements
 
 ```bash
+# Option A — conda
 conda env create -f environment.yaml
 conda activate urban_validation
-pip install duckdb psutil earthengine-api
+
+# Option B — pip (into a fresh Python 3.11 environment)
+pip install -r requirements.txt
+
 earthengine authenticate   # required for Google OBT and GHSL downloads
 ```
+
+Colab users don't need a local install — each notebook bootstraps the code from
+GitHub via `colab_bootstrap.py`; set the project/data root at the top of the
+notebook (the `/content/drive/MyDrive/urban_validation` placeholder).
+
+### Notebook workflow (run order)
+
+Run the core notebooks in ascending order. `90`/`91` are optional deep-dive
+report notebooks; `93`–`99` are sensitivity studies and diagnostics.
+
+| Notebook | Purpose | Key outputs |
+|---|---|---|
+| `00_download_data` | Download vector + raster datasets for the AOIs | `data/01_raw/<city>/…` |
+| `01_validate_vector` | Vector (footprint) validation | `outputs/metrics/<city>/vector_*` |
+| `02_validate_raster` | Raster (built-up area) validation | `outputs/metrics/<city>/raster_*` |
+| `03_coverage_audit_rerun` | Re-run cities with missing/incomplete outputs | updated `outputs/metrics/` |
+| `04_aggregate_global_metrics` | Merge per-city summaries into global tables | `outputs/global_metrics/*` |
+| `05_per_tile_attributes` | Enrich tiles with density/size attributes | `outputs/…/per_tile_enriched*` |
+| `06_analysis_density_f1` | Density/size vs F1 analysis | `outputs/scratch/nb06_analysis_summary.md` |
+| `07_visualizations` | Canonical report figures (V/R/D/S/W series) | `outputs/figures/*` |
+| `90_analysis_vector` / `91_analysis_raster` | Optional deep-dive report notebooks | embedded report figures |
+| `93`–`96` | Sensitivity studies (buffer, IoU τ, WSF year) and sanity checks | `outputs/sensitivity_studies/*` |
+| `97`–`99` | AOI maps, visual inspection, data-inventory checks | figures / inventory tables |
 
 ### Data Preparation and Download 
 #### Vector datasets download pipeline
@@ -107,7 +152,7 @@ v.validate_vector()
 
 Outputs per city are written to `outputs/metrics/<city>/` and `outputs/figures/<city>/`. Vector outputs include tile metrics, match records, city-level summary tables, size-bin metrics, and density/count summaries. Candidate datasets and preprocessing thresholds are controlled via `configs/validation_configs.yaml`.
 
-See `notebooks/01_vector_validator.ipynb` for the Colab-ready notebook.
+See `notebooks/01_validate_vector.ipynb` for the Colab-ready notebook.
 
 #### Raster datasets validation
 ```python
@@ -121,7 +166,7 @@ Each raster dataset entry in `configs/validation_configs.yaml` specifies a `name
 
 Each dataset's `min_building_m2` sets the minimum-detectable-building threshold used to binarize *predictions* at native resolution (`tau_frac_native = min_building_m2 / native_pixel_area`); categorical binarization methods (`wsf_tracker`, `binary`, `nonzero`, `value_in`) bypass this and use predicted area > 0 directly. The global `raster.preprocessing.min_building_m2` sets the threshold used to binarize the *reference* layer at each evaluation grid resolution, keeping the reference "built" definition consistent across datasets. `raster.preprocessing.native_resolution_guard` controls whether evaluation grids finer than a dataset's `native_resolution_m` (scaled by `tolerance_factor`) are skipped (`skip_finer`), rejected (`error`), or allowed with a warning (`warn_only`).
 
-See `notebooks/02_raster_validator.ipynb` for the Colab-ready notebook.
+See `notebooks/02_validate_raster.ipynb` for the Colab-ready notebook.
 
 ### Result visualization 
 The validation pipeline writes city-level summaries and figures for both vector and raster datasets. The standard outputs now include building-count analytics in addition to IoU, area error, and F1 summaries:

@@ -17,14 +17,13 @@ import gc
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import geopandas as gpd
 import pandas as pd
 
 from src.utils.geometry import get_projected_crs
 from src.utils.buildings import load_buildings
-from src.utils.memory import log_memory
 from src.utils.tiling import make_tiles
 
 log = logging.getLogger("UrbanValidator.runner")
@@ -42,6 +41,7 @@ class BaseValidationRunner(ABC):
     sentinel_name: str = "validation_metrics_all_datasets.parquet"
 
     def __init__(self, cfg: dict, root: Path, data_dir: Path):
+        """Initialize the BaseValidationRunner with config, root, and data directory."""
         self.cfg = cfg
         self.root = Path(root)
         self.data_dir = Path(data_dir)

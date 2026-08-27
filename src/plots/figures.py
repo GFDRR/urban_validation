@@ -34,6 +34,7 @@ class VectorFigureGenerator:
     """Generate the standard set of vector validation figures for one city."""
 
     def __init__(self, cfg: dict, *, dpi: int, fmt: str):
+        """Initialize the VectorFigureGenerator with config, DPI, and file format."""
         self.cfg = cfg
         self.dpi = dpi
         self.fmt = fmt
@@ -49,6 +50,7 @@ class VectorFigureGenerator:
         figures_dir: Path,
         show_count_plots: bool = True,
     ) -> None:
+        """Generate the standard vector validation figures for one city, isolating failures."""
         matplotlib.use("Agg")
         city_label = dataset_id.replace("-", " ").title()
 
@@ -128,6 +130,7 @@ class RasterFigureGenerator:
     """Generate the standard set of raster validation figures for one city."""
 
     def __init__(self, cfg: dict, *, dpi: int, fmt: str):
+        """Initialize the RasterFigureGenerator with config, DPI, and file format."""
         self.cfg = cfg
         self.dpi = dpi
         self.fmt = fmt
@@ -142,6 +145,7 @@ class RasterFigureGenerator:
         figures_dir: Path,
         show_count_plots: bool = True,
     ) -> None:
+        """Generate the standard raster validation figures for one city, isolating failures."""
         matplotlib.use("Agg")
         city_label = dataset_id.replace("-", " ").title()
 

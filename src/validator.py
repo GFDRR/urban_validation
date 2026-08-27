@@ -41,6 +41,7 @@ class UrbanValidator:
     """
 
     def __init__(self, config_path: str):
+        """Initialize the UrbanValidator from a config path and load validation datasets."""
         with open(config_path) as f:
             self.cfg = yaml.safe_load(f)
 

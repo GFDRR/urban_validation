@@ -14,14 +14,14 @@ skipping any city that already has an SN7 entry.
 Usage (Colab):
     python src/utils/sn7_utils.py \\
         --sn7-dir /path/to/local/data \\
-        --output-root "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/01_raw" \\
-        --tracker-path "/content/drive/MyDrive/Gates Foundation/Building Dataset Validation/data/02_interim/aoi_tracker.csv"
+        --output-root "/content/drive/MyDrive/<project>/data/01_raw" \\
+        --tracker-path "/content/drive/MyDrive/<project>/data/02_interim/aoi_tracker.csv"
 
 Usage (local with Google Drive Desktop):
     python src/utils/sn7_utils.py \\
         --sn7-dir data \\
-        --output-root "/Users/you/Library/CloudStorage/GoogleDrive-.../My Drive/Gates Foundation/Building Dataset Validation/data/01_raw" \\
-        --tracker-path "/Users/you/Library/CloudStorage/GoogleDrive-.../My Drive/Gates Foundation/Building Dataset Validation/data/02_interim/aoi_tracker.csv"
+        --output-root "/path/to/<project>/data/01_raw" \\
+        --tracker-path "/path/to/<project>/data/02_interim/aoi_tracker.csv"
 
 Optional flags:
     --cities city1 city2   Process only these city IDs (default: all)
@@ -464,6 +464,7 @@ def process_city(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    """Parse CLI arguments and build merged SN7 city reference and AOI files."""
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -477,9 +478,8 @@ def main() -> None:
         "--output-root",
         required=True,
         help=(
-            "Root of data/01_raw on Google Drive, e.g. "
-            "'/content/drive/MyDrive/Gates Foundation/"
-            "Building Dataset Validation/data/01_raw'"
+            "Root of data/01_raw, e.g. "
+            "'/content/drive/MyDrive/<project>/data/01_raw'"
         ),
     )
     parser.add_argument(

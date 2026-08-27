@@ -249,6 +249,7 @@ def compute_city_density_summary(
     )
 
     def _row(source: str, areas: pd.Series) -> dict:
+        """Build one summary row of counts, density, and area stats for a source."""
         n = int(len(areas)) if areas is not None else 0
         density = (n / aoi_area_km2_value) if aoi_area_km2_value and aoi_area_km2_value > 0 else np.nan
         stats = _area_stats(areas)

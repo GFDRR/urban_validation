@@ -34,6 +34,7 @@ class OvertureConfig:
     s3_url: str = "s3://overturemaps-us-west-2/release/"
 
     def __post_init__(self):
+        """Normalize the types field to an empty list when unset."""
         object.__setattr__(self, "types", self.types or [])
 
 
@@ -137,6 +138,7 @@ class UrbanConfig:
 
 
 def load_config(path: str) -> UrbanConfig:
+    """Load a YAML config file and build the UrbanConfig dataclass tree."""
     with open(path, "r") as f:
         raw = yaml.safe_load(f)
 

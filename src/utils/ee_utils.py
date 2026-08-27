@@ -246,6 +246,7 @@ def init_earth_engine(project: str | None = None) -> None:
     import ee
 
     def _in_ipython_kernel() -> bool:
+        """Return True when running inside an interactive IPython/Jupyter kernel."""
         try:
             from IPython import get_ipython
             ip = get_ipython()
