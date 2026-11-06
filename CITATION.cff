@@ -1,22 +1,27 @@
 cff-version: 1.2.0
-message: "If you use this software or its outputs, please cite it as below."
-title: "Assessment of Satellite-derived Building Datasets"
+message: "If you use this software or its outputs, please cite the associated preprint below."
+title: "A comparative assessment of global building and settlement datasets across geographic and settlement contexts"
 abstract: >-
-  A config-driven pipeline for downloading and benchmarking global
-  building-footprint (vector) and settlement-layer (raster) datasets against
-  AOI-specific reference building footprints.
+  Global building and settlement products increasingly support population
+  mapping, exposure assessment, and urban monitoring, yet comparative evidence
+  remains fragmented across representations, geographic contexts, and
+  evaluation methods. This software implements a representation-aware framework
+  for benchmarking seven global or near-global products against harmonized
+  reference building footprints across 135 study areas.
 type: software
 authors:
   - family-names: Balogun
     given-names: Rufai Omowunmi
   - family-names: Gevaert
     given-names: Caroline Margaux
+  - family-names: Riom
+    given-names: Capucine
   - family-names: Mirindi
     given-names: Derrick
   - family-names: Opdyke
     given-names: Aaron
-  - family-names: Riom
-    given-names: Capucine Anne Veronique
+  - family-names: Alemohammad
+    given-names: Hamed
   - family-names: Chrzanowski
     given-names: Pierre
   - family-names: Anderson
@@ -26,3 +31,26 @@ version: "0.1.0"
 license: MIT
 url: "https://github.com/GFDRR/urban_validation"
 repository-code: "https://github.com/GFDRR/urban_validation"
+preferred-citation:
+  type: article
+  title: "A comparative assessment of global building and settlement datasets across geographic and settlement contexts"
+  authors:
+    - family-names: Balogun
+      given-names: Rufai Omowunmi
+    - family-names: Gevaert
+      given-names: Caroline Margaux
+    - family-names: Riom
+      given-names: Capucine
+    - family-names: Mirindi
+      given-names: Derrick
+    - family-names: Opdyke
+      given-names: Aaron
+    - family-names: Alemohammad
+      given-names: Hamed
+    - family-names: Chrzanowski
+      given-names: Pierre
+    - family-names: Anderson
+      given-names: Edward Charles
+  year: 2026
+  doi: "10.48550/arXiv.2609.28154"
+  url: "https://arxiv.org/abs/2609.28154"

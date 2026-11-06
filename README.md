@@ -1,8 +1,9 @@
 <div align="center">
 
-# Assessment of Satellite-derived Building Datasets 
+# A comparative assessment of global building and settlement datasets across geographic and settlement contexts
 [Rufai Omowunmi Balogun](https://github.com/Ruphai),
 [Caroline Margaux Gevaert](https://github.com/CGevaert), 
+[Capucine Riom](https://github.com/CapsR),
 [Derrick Mirindi](https://github.com/Derrickmirindi), 
 [Aaron Opdyke](https://github.com/aaronopdyke),
 [Capucine Anne Veronique Riom](https://github.com/CapsR), 
@@ -12,7 +13,7 @@
 </div>
 
 ## Project overview
-This repository contains a config-driven pipeline for downloading and benchmarking global building-footprint and settlement-layer datasets over selected AOIs.
+This repository contains the code accompanying the preprint [*A comparative assessment of global building and settlement datasets across geographic and settlement contexts*](https://arxiv.org/abs/2609.28154). It provides a config-driven pipeline for downloading and benchmarking seven global or near-global building-footprint and settlement-layer products against harmonized reference building footprints across 135 study areas.
 
 The download pipeline covers vector datasets such as `Overture`, `Global Building Atlas`, and `3D-GloBFP`, and raster datasets such as `Google Open Buildings`, `TEMPO`, `WSF-Tracker`, and `GHSL Built-up and Height`.
 
@@ -211,13 +212,15 @@ This code repository and corresponding datasets are distributed under the MIT Li
 ## Citation
 
 ```
-@misc{urban_validation_gfdrr2026,
-  title={An assessment of satellite derived global urban datasets for operational and analytical use cases},
-  author={Rufai Omowunmi Balogun, Caroline Margaux Gevaert, Derrick Mirindi, Aaron Opdyke, Capucine Anne Veronique Riom, Pierre Chrzanowski, Edward Charles Anderson},
+@misc{balogun2026comparativeassessmentglobalbuilding,
+  title={A Comparative Assessment of Global Building and Settlement Datasets across Geographic and Settlement Contexts},
+  author={Rufai Omowunmi Balogun and Caroline Margaux Gevaert and Capucine Riom and Derrick Mirindi and Aaron Opdyke and Hamed Alemohammad and Pierre Chrzanowski and Edward Charles Anderson},
   year={2026},
-  organization={GFDRR, The World Bank Group},
-  type={Dataset},
-  howpublished={\url{https://github.com/GFDRR/urban_validation}}
+  eprint={2609.28154},
+  archivePrefix={arXiv},
+  primaryClass={cs.CV},
+  doi={10.48550/arXiv.2609.28154},
+  url={https://arxiv.org/abs/2609.28154}
 }
 ```
 
