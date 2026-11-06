@@ -5,8 +5,8 @@
 [Caroline Margaux Gevaert](https://github.com/CGevaert), 
 [Capucine Riom](https://github.com/CapsR),
 [Derrick Mirindi](https://github.com/Derrickmirindi), 
-[Aaron Opdyke](),
-[Hamed Alemohammad](https://hamedalemo.github.io/),
+[Aaron Opdyke](https://github.com/aaronopdyke),
+[Capucine Anne Veronique Riom](https://github.com/CapsR), 
 [Pierre Chrzanowski](https://github.com/pzwsk), and 
 [Edward Charles Anderson]()
 
